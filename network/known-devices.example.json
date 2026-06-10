@@ -1,0 +1,11 @@
+{
+  "_comment": "MAC アドレス -> 端末名 の対応表。homewatch-netscan.py が既知端末の判定に使う。これを known-devices.json にコピーするか、`python3 homewatch-netscan.py --init` で自動生成する。新しく増やした自分の端末はここに追記すると、以後アラートされなくなる。",
+  "updated_at": "2026-01-01T00:00:00+09:00",
+  "devices": {
+    "aa:bb:cc:11:22:33": "リビングのWi-Fiルーター",
+    "aa:bb:cc:44:55:66": "お父さんのノートPC (Windows)",
+    "aa:bb:cc:77:88:99": "お母さんのiPhone",
+    "aa:bb:cc:aa:bb:cc": "子ども部屋のタブレット",
+    "aa:bb:cc:de:ad:01": "ネットワークプリンタ"
+  }
+}
