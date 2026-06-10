@@ -143,11 +143,19 @@ if (-not $baseline) {
 
 $alerts = [System.Collections.Generic.List[object]]::new()
 
-$alerts.AddRange([object[]](Test-LogonEvents -Events (Get-RecentLogonEvents -Minutes $cfg.EventLookbackMinutes) -Config $cfg))
-$alerts.AddRange([object[]](Test-NetworkListeners -Listeners (Get-CurrentListeners) -AllowedPorts $cfg.AllowedListeningPorts))
-$alerts.AddRange([object[]](Test-Persistence -Current (Get-CurrentPersistence) -Baseline @($baseline.Persistence)))
-$alerts.AddRange([object[]](Test-NewLocalUsers -Current (Get-CurrentLocalUsers) -Baseline @($baseline.LocalUsers)))
-$alerts.AddRange([object[]](Test-MicCameraAccess -AccessRecords (Get-MicCameraAccess) -AllowedApps $cfg.AllowedMicCameraApps -SinceHours $cfg.MicCameraSinceHours))
+# 検知関数が 0 件を返すと PowerShell では結果が $null になり得るため、@() で包み null 要素を除いて追加する
+function Add-AlertBatch {
+    param($Batch)
+    foreach ($a in @($Batch)) {
+        if ($null -ne $a) { [void]$alerts.Add($a) }
+    }
+}
+
+Add-AlertBatch (Test-LogonEvents -Events @(Get-RecentLogonEvents -Minutes $cfg.EventLookbackMinutes) -Config $cfg)
+Add-AlertBatch (Test-NetworkListeners -Listeners @(Get-CurrentListeners) -AllowedPorts $cfg.AllowedListeningPorts)
+Add-AlertBatch (Test-Persistence -Current @(Get-CurrentPersistence) -Baseline @($baseline.Persistence))
+Add-AlertBatch (Test-NewLocalUsers -Current @(Get-CurrentLocalUsers) -Baseline @($baseline.LocalUsers))
+Add-AlertBatch (Test-MicCameraAccess -AccessRecords @(Get-MicCameraAccess) -AllowedApps $cfg.AllowedMicCameraApps -SinceHours $cfg.MicCameraSinceHours)
 
 $notified = 0
 foreach ($a in $alerts) {
