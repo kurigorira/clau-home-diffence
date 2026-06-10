@@ -32,6 +32,15 @@ class TestNormalizeMac(unittest.TestCase):
         self.assertEqual(ns.normalize_mac("ff:ff:ff:ff:ff:ff"), "")
         self.assertEqual(ns.normalize_mac("00:00:00:00:00:00"), "")
 
+    def test_rejects_multicast(self):
+        # IPv4/IPv6 マルチキャスト（先頭オクテットの最下位ビットが1）は除外
+        self.assertEqual(ns.normalize_mac("01:00:5e:7f:ff:fa"), "")
+        self.assertEqual(ns.normalize_mac("33:33:00:00:00:16"), "")
+
+    def test_keeps_locally_administered_unicast(self):
+        # スマホのランダムMAC（ローカル管理ビット0x02、I/Gビットは0）は残す
+        self.assertEqual(ns.normalize_mac("02:11:22:33:44:55"), "02:11:22:33:44:55")
+
     def test_rejects_malformed(self):
         self.assertEqual(ns.normalize_mac("not-a-mac"), "")
         self.assertEqual(ns.normalize_mac("aa:bb:cc:dd:ee"), "")

@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import datetime as _dt
 import ipaddress
 import json
@@ -65,7 +66,14 @@ def normalize_mac(mac: str) -> str:
             return ""
         out.append(p.zfill(2))
     norm = ":".join(out)
-    return "" if norm in _INVALID_MACS else norm
+    if norm in _INVALID_MACS:
+        return ""
+    # マルチキャスト/ブロードキャスト（先頭オクテットの最下位ビット=I/Gビットが1）を除外する。
+    # 例: 01:00:5e:xx(IPv4マルチキャスト), 33:33:xx(IPv6マルチキャスト), ff:ff:..(ブロードキャスト)。
+    # 実端末のユニキャストMACは先頭オクテットが偶数なので、スマホのランダムMAC等は除外されない。
+    if int(out[0], 16) & 1:
+        return ""
+    return norm
 
 
 def parse_ip_neigh(output: str) -> Dict[str, str]:
@@ -142,8 +150,11 @@ def merge_known(known: Dict[str, str], devices: Dict[str, str]) -> Dict[str, str
 # ---------------------------------------------------------------------------
 def _run(cmd: List[str], timeout: int = 30) -> str:
     try:
+        # errors="replace": 日本語版 Windows の arp 出力（CP932）などで
+        # デコードに失敗しても IP/MAC（ASCII）は読めるようにする。
         proc = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=timeout, check=False
+            cmd, capture_output=True, text=True, errors="replace",
+            timeout=timeout, check=False,
         )
         return proc.stdout or ""
     except (subprocess.SubprocessError, FileNotFoundError, OSError):
@@ -241,12 +252,49 @@ def write_log(path: str, record: dict) -> None:
         fh.write(line + "\n")
 
 
+def _windows_toast(title: str, body: str) -> bool:
+    """Windows トースト通知を表示する（成功で True）。
+
+    ログオン中のユーザーのセッションで実行されたときに表示される。
+    クォート問題を避けるため PowerShell を -EncodedCommand(base64/UTF-16LE) で呼ぶ。
+    """
+    def esc(s: str) -> str:
+        return s.replace("'", "''")
+
+    ps = (
+        "$ErrorActionPreference='SilentlyContinue';"
+        "[void][Windows.UI.Notifications.ToastNotificationManager,Windows.UI.Notifications,ContentType=WindowsRuntime];"
+        "$t=[Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent("
+        "[Windows.UI.Notifications.ToastTemplateType]::ToastText02);"
+        "$x=$t.GetElementsByTagName('text');"
+        f"$x.Item(0).AppendChild($t.CreateTextNode('{esc(title)}'))|Out-Null;"
+        f"$x.Item(1).AppendChild($t.CreateTextNode('{esc(body)}'))|Out-Null;"
+        "$n=[Windows.UI.Notifications.ToastNotification]::new($t);"
+        "[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('HomeWatch').Show($n)"
+    )
+    encoded = base64.b64encode(ps.encode("utf-16-le")).decode("ascii")
+    exe = shutil.which("powershell") or shutil.which("pwsh")
+    if not exe:
+        return False
+    try:
+        subprocess.run(
+            [exe, "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
+            capture_output=True, timeout=20, check=False,
+        )
+        return True
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
 def desktop_notify(title: str, body: str) -> None:
-    """notify-send があればデスクトップ通知。無ければ標準エラーへ。"""
-    if shutil.which("notify-send"):
+    """デスクトップ通知を出す。Windows はトースト、Linux は notify-send、無ければ標準エラーへ。"""
+    if sys.platform.startswith("win"):
+        if _windows_toast(title, body):
+            return
+    elif shutil.which("notify-send"):
         _run(["notify-send", "-u", "critical", title, body], timeout=10)
-    else:
-        sys.stderr.write(f"[HomeWatch] {title}: {body}\n")
+        return
+    sys.stderr.write(f"[HomeWatch] {title}: {body}\n")
 
 
 # ---------------------------------------------------------------------------

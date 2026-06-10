@@ -4,6 +4,9 @@
 **見覚えのない端末**がつながったら通知できるようにします。Python3 標準ライブラリのみで動き、
 追加パッケージは不要です。
 
+> **Windows 11 で動かす場合は、下の「Windows で動かす」セクションを参照してください。**
+> 以下の「前提〜5」は主に Linux / Raspberry Pi 向けの説明です（Windows でも考え方は同じです）。
+
 ## 前提
 - Python 3.8 以上。
 - ARP テーブルや ping を使うため、**`sudo`（root）での実行**を推奨（特に `arp-scan` 利用時）。
@@ -76,3 +79,71 @@ journalctl -u homewatch-netscan.service -f     # ログ確認
 - デスクトップ環境＋`notify-send` があればポップアップ。
 - ヘッドレス（画面なし）の Pi では、ログ（`homewatch-netscan.log` / journalctl）で確認するか、
   別途メール/チャット通知に転送する仕組みを足すこともできます（ログはローカル保存が既定です）。
+
+---
+
+# Windows で動かす（Windows 11 端末を監視機にする）
+
+常時起動している Windows PC があれば、それ自体を自宅ネットワークの見張り役にできます。
+Windows では検知時に **トースト通知** が出ます（ログオン中のユーザーに表示）。
+ARP の読み取りに管理者権限は不要です。
+
+## W-1. Python を入れる
+1. https://www.python.org/downloads/windows/ から Python 3 をインストール
+   （インストーラの「**Add python.exe to PATH**」に必ずチェック）。Microsoft Store 版でも可。
+2. 確認（PowerShell で）：
+   ```powershell
+   python --version
+   ```
+
+## W-2. 自宅のサブネット（--cidr）を調べる
+PowerShell で：
+```powershell
+ipconfig
+```
+「IPv4 アドレス」（例 `192.168.1.23`）と「サブネット マスク」（例 `255.255.255.0`）を見ます。
+マスクが `255.255.255.0` なら、CIDR は **アドレスの先頭3つ + `.0/24`**。
+上の例なら `192.168.1.0/24` です（多くの家庭はこの形）。
+
+## W-3. 初回：既知端末リストを作る
+**自分の家の端末だけ**が Wi-Fi につながっている状態で、`network` フォルダに移動して：
+```powershell
+cd C:\Users\user\clau-home-diffence\network
+python homewatch-netscan.py --cidr 192.168.1.0/24 init
+```
+生成された `known-devices.json` を開き、各 MAC に分かりやすい名前を付けておくと後で見やすくなります。
+
+## W-4. スキャン（手動確認）
+```powershell
+python homewatch-netscan.py --cidr 192.168.1.0/24 scan
+```
+見覚えのない端末がいると **トースト通知** が出て、`homewatch-netscan.log` に記録されます。
+
+## W-5. 定期実行（タスクスケジューラに登録）
+**通知を出したいので、SYSTEM ではなく「ログオン中の自分のユーザー」で実行**します。
+管理者 PowerShell で以下を実行（パスと CIDR は自分の環境に合わせて変更）：
+
+```powershell
+$py     = (Get-Command python).Source
+$script = "C:\Users\user\clau-home-diffence\network\homewatch-netscan.py"
+$cidr   = "192.168.1.0/24"
+
+$action  = New-ScheduledTaskAction -Execute $py -Argument "`"$script`" --cidr $cidr scan"
+$trigger = New-ScheduledTaskTrigger -Once -At (Get-Date) `
+             -RepetitionInterval (New-TimeSpan -Minutes 5)
+# 現在ログオン中のユーザーとして、対話セッションで実行（トースト通知のため）
+$principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType Interactive
+$settings  = New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+
+Register-ScheduledTask -TaskName 'HomeWatch-NetScan' -Action $action -Trigger $trigger `
+    -Principal $principal -Settings $settings -Force
+```
+- 5分ごとにスキャンし、未知の端末が出たら通知＋ログ。
+- 確認: `Get-ScheduledTask -TaskName HomeWatch-NetScan`、手動実行: `Start-ScheduledTask -TaskName HomeWatch-NetScan`。
+- 解除: `Unregister-ScheduledTask -TaskName HomeWatch-NetScan -Confirm:$false`。
+
+## W-6. 新しい端末が増えたとき（誤検知の解消）
+- 自分/家族の端末なら、`known-devices.json` の `devices` に `"aa:bb:cc:dd:ee:ff": "○○のスマホ"` を追記。
+- まとめて取り込むなら、その端末を接続した状態で再度 `... init` を実行（既存の名前は保持）。
+- スマホの **プライベートアドレス（ランダムMAC）** で MAC が変わる場合は、その端末の Wi-Fi 設定で
+  固定にするか、出た MAC を登録してください（このツールはマルチキャスト/ブロードキャストは自動で除外します）。
