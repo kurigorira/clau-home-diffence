@@ -30,6 +30,7 @@
 | `docs/quick-checklist.md` | 全領域横断の優先チェックリスト |
 | `docs/windows-hardening.md` | Windows PC の守りを固める手順 |
 | `docs/smartphone-hardening.md` | Android/iOS 防御＋盗聴/スパイウェア点検＋公式ペアレンタルコントロール |
+| `docs/iphone-spyware-check.md` | iPhone 盗聴・スパイウェア点検（画面操作レベルの手順） |
 | `docs/router-iot-hardening.md` | Wi-Fi ルーター・IoT 機器（カメラ等）の防御 |
 | `docs/account-security.md` | アカウント乗っ取り検知（2段階認証・サインイン通知・漏洩チェック） |
 | `docs/how-it-works.md` | 各ツールが何を見るか・アラートの読み方・誤検知時の対処 |

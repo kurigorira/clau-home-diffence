@@ -25,6 +25,7 @@
 - [ ] 重要パスワードの漏洩チェック（`python3 tools/check-pwned-password.py`）→ `account-security.md`
 
 ## 🕵 盗聴・スパイウェアが心配なとき
+- [ ] **iPhone: 専用の点検ガイドを上から実施** → `iphone-spyware-check.md`（構成プロファイル/MDM・セーフティチェック・App プライバシーレポート 他）
 - [ ] iPhone: App プライバシーレポートでマイク/カメラ利用を確認、不明な構成プロファイルを点検 → `smartphone-hardening.md`
 - [ ] Android: プライバシーダッシュボード、デバイス管理アプリ／ユーザー補助の不審な許可を点検 → `smartphone-hardening.md`
 - [ ] Windows: 許可外アプリのマイク/カメラ使用を HomeWatch が監視（`Test-MicCameraAccess`）→ `how-it-works.md`
