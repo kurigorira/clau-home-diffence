@@ -27,6 +27,7 @@
 ## 中身の地図
 | 場所 | 内容 |
 | --- | --- |
+| `Run-HomeWatch.bat` | **ダブルクリックで一括実行**（PCスキャン＋ネットスキャン＋最新アラート表示） |
 | `docs/quick-checklist.md` | 全領域横断の優先チェックリスト |
 | `docs/windows-hardening.md` | Windows PC の守りを固める手順 |
 | `docs/smartphone-hardening.md` | Android/iOS 防御＋盗聴/スパイウェア点検＋公式ペアレンタルコントロール |
