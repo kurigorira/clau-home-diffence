@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     HomeWatch — Windows PC の不正侵入・乗っ取り・盗聴の兆候を検知するロジック群。
 

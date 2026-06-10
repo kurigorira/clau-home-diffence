@@ -1,4 +1,4 @@
-<#
+﻿<#
 HomeWatch.psm1 の検知関数の Pester テスト。
 
 Windows 専用 cmdlet は呼ばず、合成（モック）データを各 Test-* 関数に渡して判定を検証する。
