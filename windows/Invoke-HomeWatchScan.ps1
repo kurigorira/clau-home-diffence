@@ -28,109 +28,8 @@ $cfg = Import-PowerShellDataFile -Path $ConfigPath
 $cfg.LogPath = [Environment]::ExpandEnvironmentVariables($cfg.LogPath)
 $cfg.BaselinePath = [Environment]::ExpandEnvironmentVariables($cfg.BaselinePath)
 
-# ---------------------------------------------------------------------------
-# データ収集ヘルパー（実 Windows 環境でのみ動作。検知ロジックとは分離）
-# ---------------------------------------------------------------------------
-function Get-RecentLogonEvents {
-    param([int]$Minutes)
-    $start = (Get-Date).AddMinutes(-1 * $Minutes)
-    $ids = 4624, 4625, 4720, 4728, 4732
-    try {
-        $raw = Get-WinEvent -FilterHashtable @{ LogName = 'Security'; Id = $ids; StartTime = $start } -ErrorAction Stop
-    } catch {
-        # 該当イベント無しなどは空配列扱い
-        return @()
-    }
-    foreach ($e in $raw) {
-        $x = [xml]$e.ToXml()
-        $data = @{}
-        foreach ($d in $x.Event.EventData.Data) { $data[$d.Name] = $d.'#text' }
-        [pscustomobject]@{
-            Id             = [int]$e.Id
-            TimeCreated    = $e.TimeCreated
-            LogonType      = if ($data.ContainsKey('LogonType')) { [int]$data['LogonType'] } else { $null }
-            TargetUserName = $data['TargetUserName']
-            IpAddress      = $data['IpAddress']
-        }
-    }
-}
-
-function Get-CurrentListeners {
-    try {
-        Get-NetTCPConnection -State Listen -ErrorAction Stop | ForEach-Object {
-            $procName = try { (Get-Process -Id $_.OwningProcess -ErrorAction Stop).ProcessName } catch { '?' }
-            [pscustomobject]@{ LocalPort = [int]$_.LocalPort; OwningProcessName = $procName }
-        } | Sort-Object LocalPort -Unique
-    } catch { @() }
-}
-
-function Get-CurrentLocalUsers {
-    try { Get-LocalUser | ForEach-Object { [pscustomobject]@{ Name = $_.Name } } } catch { @() }
-}
-
-function Get-CurrentPersistence {
-    $items = [System.Collections.Generic.List[object]]::new()
-    # スケジュールタスク
-    try {
-        foreach ($t in (Get-ScheduledTask -ErrorAction Stop)) {
-            $items.Add([pscustomobject]@{
-                Id = "task:$($t.TaskPath)$($t.TaskName)"; Name = $t.TaskName; Type = 'ScheduledTask' })
-        }
-    } catch {}
-    # レジストリ Run キー（HKLM/HKCU）
-    $runKeys = @(
-        'HKLM:\Software\Microsoft\Windows\CurrentVersion\Run',
-        'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
-    )
-    foreach ($key in $runKeys) {
-        if (Test-Path $key) {
-            $props = Get-ItemProperty -Path $key
-            foreach ($p in $props.PSObject.Properties) {
-                if ($p.Name -like 'PS*') { continue }
-                $items.Add([pscustomobject]@{
-                    Id = "run:$key\$($p.Name)"; Name = "$($p.Name) = $($p.Value)"; Type = 'RunKey' })
-            }
-        }
-    }
-    # スタートアップフォルダ
-    $startup = [Environment]::GetFolderPath('Startup')
-    if ($startup -and (Test-Path $startup)) {
-        foreach ($f in (Get-ChildItem -Path $startup -File -ErrorAction SilentlyContinue)) {
-            $items.Add([pscustomobject]@{ Id = "startup:$($f.Name)"; Name = $f.Name; Type = 'StartupFolder' })
-        }
-    }
-    return $items.ToArray()
-}
-
-function Get-MicCameraAccess {
-    # ConsentStore に記録された、マイク/カメラを使ったアプリと最終使用時刻を読む。
-    $stores = @{ microphone = 'microphone'; webcam = 'webcam' }
-    $records = [System.Collections.Generic.List[object]]::new()
-    foreach ($cap in $stores.Keys) {
-        foreach ($hive in @('HKCU:', 'HKLM:')) {
-            $base = "$hive\Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\$cap"
-            if (-not (Test-Path $base)) { continue }
-            foreach ($appKey in (Get-ChildItem -Path $base -ErrorAction SilentlyContinue)) {
-                # NonPackaged 配下も含めて末端キーを走査
-                $leaves = @($appKey) + @(Get-ChildItem -Path $appKey.PSPath -Recurse -ErrorAction SilentlyContinue)
-                foreach ($leaf in $leaves) {
-                    $val = Get-ItemProperty -Path $leaf.PSPath -ErrorAction SilentlyContinue
-                    if ($val -and $val.PSObject.Properties.Name -contains 'LastUsedTimeStop') {
-                        $stop = [int64]$val.LastUsedTimeStop
-                        if ($stop -gt 0) {
-                            $records.Add([pscustomobject]@{
-                                App        = ($leaf.PSChildName -replace '#', '\')
-                                Capability = $cap
-                                LastUsed   = [DateTime]::FromFileTime($stop)
-                            })
-                        }
-                    }
-                }
-            }
-        }
-    }
-    return $records.ToArray()
-}
+# データ収集関数（Get-RecentLogonEvents / Get-CurrentListeners / Get-CurrentLocalUsers /
+# Get-CurrentPersistence / Get-MicCameraAccess）は HomeWatch.psm1 から提供される。
 
 # ---------------------------------------------------------------------------
 # スキャン実行
@@ -151,14 +50,16 @@ function Add-AlertBatch {
     }
 }
 
-# 旧バージョンのベースライン（Listeners 無し）でも動くようにガードする
-$baselineListeners = if ($baseline.PSObject.Properties.Name -contains 'Listeners') { @($baseline.Listeners) } else { @() }
+# 旧バージョンのベースライン（フィールド欠落）でも動くよう StrictMode 安全に取り出す
+$baselineListeners   = @(Get-PropOr $baseline 'Listeners' @())
+$baselinePersistence = @(Get-PropOr $baseline 'Persistence' @())
+$baselineUsers       = @(Get-PropOr $baseline 'LocalUsers' @())
 
 Add-AlertBatch (Test-LogonEvents -Events @(Get-RecentLogonEvents -Minutes $cfg.EventLookbackMinutes) -Config $cfg)
 Add-AlertBatch (Test-NetworkListeners -Listeners @(Get-CurrentListeners) -AllowedPorts $cfg.AllowedListeningPorts `
     -BaselinePorts $baselineListeners -EphemeralStart $cfg.EphemeralPortStart -IgnoreEphemeral $cfg.IgnoreEphemeralPorts)
-Add-AlertBatch (Test-Persistence -Current @(Get-CurrentPersistence) -Baseline @($baseline.Persistence))
-Add-AlertBatch (Test-NewLocalUsers -Current @(Get-CurrentLocalUsers) -Baseline @($baseline.LocalUsers))
+Add-AlertBatch (Test-Persistence -Current @(Get-CurrentPersistence) -Baseline $baselinePersistence)
+Add-AlertBatch (Test-NewLocalUsers -Current @(Get-CurrentLocalUsers) -Baseline $baselineUsers)
 Add-AlertBatch (Test-MicCameraAccess -AccessRecords @(Get-MicCameraAccess) -AllowedApps $cfg.AllowedMicCameraApps -SinceHours $cfg.MicCameraSinceHours)
 
 $notified = 0

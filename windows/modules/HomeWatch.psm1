@@ -16,6 +16,20 @@ Set-StrictMode -Version Latest
 # 重大度の語彙
 $script:Severities = @('info', 'warning', 'alert')
 
+function Get-PropOr {
+    <# オブジェクトのプロパティを StrictMode 安全に取得する。存在しなければ Default を返す。
+       （$obj.PSObject.Properties.Name -contains ... は一部のデシリアライズ済みオブジェクトで
+        例外になるため、こちらを使う。） #>
+    [CmdletBinding()]
+    param([object]$Object, [Parameter(Mandatory)][string]$Name, $Default = $null)
+    if ($null -eq $Object) { return $Default }
+    try {
+        $v = $Object.$Name
+        if ($null -ne $v) { return $v }
+    } catch { }
+    return $Default
+}
+
 function New-HomeWatchAlert {
     <# アラートを共通フォーマットで生成する。 #>
     [CmdletBinding()]
@@ -75,7 +89,7 @@ function Test-LogonEvents {
     # --- リモート/RDP ログオン成功（LogonType 3 または 10）---
     if ($Config.AlertOnRemoteLogon) {
         foreach ($e in @($Events | Where-Object { $_.Id -eq 4624 })) {
-            $lt = if ($e.PSObject.Properties.Name -contains 'LogonType') { $e.LogonType } else { $null }
+            $lt = Get-PropOr $e 'LogonType' $null
             if ($lt -in 3, 10) {
                 $kind = if ($lt -eq 10) { 'RDP(リモートデスクトップ)' } else { 'ネットワーク' }
                 $alerts.Add((New-HomeWatchAlert -Category 'logon' -Severity 'warning' `
@@ -150,14 +164,13 @@ function Test-NetworkListeners {
     # ベースラインの (port|process) を集合化して高速照合する
     $baselineKeys = [System.Collections.Generic.HashSet[string]]::new(
         [string[]]@($BaselinePorts | ForEach-Object {
-            $bp = if ($_.PSObject.Properties.Name -contains 'process') { $_.process } else { '' }
-            "$([int]$_.port)|$bp"
+            "$([int](Get-PropOr $_ 'port' 0))|$(Get-PropOr $_ 'process' '')"
         })
     )
     $alerts = [System.Collections.Generic.List[object]]::new()
     foreach ($l in $Listeners) {
         $port = [int]$l.LocalPort
-        $proc = if ($l.PSObject.Properties.Name -contains 'OwningProcessName') { $l.OwningProcessName } else { '?' }
+        $proc = Get-PropOr $l 'OwningProcessName' '?'
         if ($AllowedPorts -contains $port) { continue }
         if ($IgnoreEphemeral -and $port -ge $EphemeralStart) { continue }
         if ($baselineKeys.Contains("$port|$proc")) { continue }
@@ -199,7 +212,7 @@ function Test-Persistence {
     foreach ($item in (Get-NewItems -Current $Current -Baseline $Baseline -KeyProperty 'Id')) {
         # HomeWatch 自身のタスクは自作自演の誤検知になるため除外する
         if ($item.Name -eq 'HomeWatch-Scan' -or $item.Id -like '*HomeWatch-Scan') { continue }
-        $type = if ($item.PSObject.Properties.Name -contains 'Type') { $item.Type } else { 'autostart' }
+        $type = Get-PropOr $item 'Type' 'autostart'
         $alerts.Add((New-HomeWatchAlert -Category 'persistence' -Severity 'alert' `
             -Message "新しい自動起動エントリを検出（$type）: $($item.Name)" `
             -Details @{ id = $item.Id; name = $item.Name; type = $type }))
@@ -338,7 +351,119 @@ function Get-Baseline {
     return Get-Content -Path $Path -Raw | ConvertFrom-Json
 }
 
+# ===========================================================================
+# データ収集関数（実 Windows 環境でのみ意味を持つ。呼ばれたときだけ実行されるので、
+# 非 Windows でモジュールを Import-Module してもエラーにならない）。
+# 検知ロジック（Test-*）とは分離してあり、これらの戻り値を Test-* に渡す。
+# ===========================================================================
+function Get-RecentLogonEvents {
+    <# 直近 N 分のログオン関連セキュリティイベントを正規化して返す。 #>
+    [CmdletBinding()]
+    param([int]$Minutes = 20)
+    $start = (Get-Date).AddMinutes(-1 * $Minutes)
+    $ids = 4624, 4625, 4720, 4728, 4732
+    try {
+        $raw = Get-WinEvent -FilterHashtable @{ LogName = 'Security'; Id = $ids; StartTime = $start } -ErrorAction Stop
+    } catch {
+        return @()  # 該当イベント無し等は空扱い
+    }
+    foreach ($e in $raw) {
+        $x = [xml]$e.ToXml()
+        $data = @{}
+        foreach ($d in $x.Event.EventData.Data) { $data[$d.Name] = $d.'#text' }
+        [pscustomobject]@{
+            Id             = [int]$e.Id
+            TimeCreated    = $e.TimeCreated
+            LogonType      = if ($data.ContainsKey('LogonType')) { [int]$data['LogonType'] } else { $null }
+            TargetUserName = $data['TargetUserName']
+            IpAddress      = $data['IpAddress']
+        }
+    }
+}
+
+function Get-CurrentListeners {
+    <# 現在 Listen 中の TCP ポートと所有プロセス名を返す。 #>
+    [CmdletBinding()] param()
+    try {
+        Get-NetTCPConnection -State Listen -ErrorAction Stop | ForEach-Object {
+            $procName = try { (Get-Process -Id $_.OwningProcess -ErrorAction Stop).ProcessName } catch { '?' }
+            [pscustomobject]@{ LocalPort = [int]$_.LocalPort; OwningProcessName = $procName }
+        } | Sort-Object LocalPort -Unique
+    } catch { @() }
+}
+
+function Get-CurrentLocalUsers {
+    <# ローカルユーザー名の一覧を返す。 #>
+    [CmdletBinding()] param()
+    try { Get-LocalUser | ForEach-Object { [pscustomobject]@{ Name = $_.Name } } } catch { @() }
+}
+
+function Get-CurrentPersistence {
+    <# 自動起動エントリ（スケジュールタスク・Run キー・スタートアップ）を一意キー付きで返す。 #>
+    [CmdletBinding()] param()
+    $items = [System.Collections.Generic.List[object]]::new()
+    try {
+        foreach ($t in (Get-ScheduledTask -ErrorAction Stop)) {
+            $items.Add([pscustomobject]@{
+                Id = "task:$($t.TaskPath)$($t.TaskName)"; Name = $t.TaskName; Type = 'ScheduledTask' })
+        }
+    } catch {}
+    $runKeys = @(
+        'HKLM:\Software\Microsoft\Windows\CurrentVersion\Run',
+        'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
+    )
+    foreach ($key in $runKeys) {
+        if (Test-Path $key) {
+            $props = Get-ItemProperty -Path $key
+            foreach ($p in $props.PSObject.Properties) {
+                if ($p.Name -like 'PS*') { continue }
+                $items.Add([pscustomobject]@{
+                    Id = "run:$key\$($p.Name)"; Name = "$($p.Name) = $($p.Value)"; Type = 'RunKey' })
+            }
+        }
+    }
+    $startup = [Environment]::GetFolderPath('Startup')
+    if ($startup -and (Test-Path $startup)) {
+        foreach ($f in (Get-ChildItem -Path $startup -File -ErrorAction SilentlyContinue)) {
+            $items.Add([pscustomobject]@{ Id = "startup:$($f.Name)"; Name = $f.Name; Type = 'StartupFolder' })
+        }
+    }
+    return $items.ToArray()
+}
+
+function Get-MicCameraAccess {
+    <# ConsentStore から、マイク/カメラを使ったアプリと最終使用時刻を返す。 #>
+    [CmdletBinding()] param()
+    $records = [System.Collections.Generic.List[object]]::new()
+    foreach ($cap in @('microphone', 'webcam')) {
+        foreach ($hive in @('HKCU:', 'HKLM:')) {
+            $base = "$hive\Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\$cap"
+            if (-not (Test-Path $base)) { continue }
+            foreach ($appKey in (Get-ChildItem -Path $base -ErrorAction SilentlyContinue)) {
+                $leaves = @($appKey) + @(Get-ChildItem -Path $appKey.PSPath -Recurse -ErrorAction SilentlyContinue)
+                foreach ($leaf in $leaves) {
+                    $val = Get-ItemProperty -Path $leaf.PSPath -ErrorAction SilentlyContinue
+                    $stopRaw = Get-PropOr $val 'LastUsedTimeStop' $null
+                    if ($null -ne $stopRaw) {
+                        $stop = [int64]$stopRaw
+                        if ($stop -gt 0) {
+                            $records.Add([pscustomobject]@{
+                                App        = ($leaf.PSChildName -replace '#', '\')
+                                Capability = $cap
+                                LastUsed   = [DateTime]::FromFileTime($stop)
+                            })
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return $records.ToArray()
+}
+
 Export-ModuleMember -Function `
-    New-HomeWatchAlert, Test-LogonEvents, Test-NetworkListeners, Get-NewItems, `
+    Get-PropOr, New-HomeWatchAlert, Test-LogonEvents, Test-NetworkListeners, Get-NewItems, `
     Test-Persistence, Test-NewLocalUsers, Test-MicCameraAccess, `
-    Write-HomeWatchLog, Send-HomeWatchAlert, Save-Baseline, Get-Baseline
+    Write-HomeWatchLog, Send-HomeWatchAlert, Save-Baseline, Get-Baseline, `
+    Get-RecentLogonEvents, Get-CurrentListeners, Get-CurrentLocalUsers, `
+    Get-CurrentPersistence, Get-MicCameraAccess

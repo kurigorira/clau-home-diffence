@@ -20,8 +20,7 @@ $ScriptDir = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyI
 if (-not $ConfigPath) { $ConfigPath = Join-Path $ScriptDir 'config\homewatch.config.psd1' }
 
 Import-Module (Join-Path $ScriptDir 'modules\HomeWatch.psm1') -Force
-$scanScript = Join-Path $ScriptDir 'Invoke-HomeWatchScan.ps1'
-. $scanScript -ConfigPath $ConfigPath -ErrorAction SilentlyContinue 2>$null  # 収集関数の読み込み
+# 収集関数（Get-Current* 等）はモジュールから提供される。スキャン本体は実行しない。
 
 $cfg = Import-PowerShellDataFile -Path $ConfigPath
 # %ProgramData% などの環境変数を実際のパスに展開する

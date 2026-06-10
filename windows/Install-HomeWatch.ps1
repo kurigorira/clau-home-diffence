@@ -35,7 +35,7 @@ if (-not $isAdmin) {
 
 Import-Module (Join-Path $ScriptDir 'modules\HomeWatch.psm1') -Force
 $scanScript = Join-Path $ScriptDir 'Invoke-HomeWatchScan.ps1'
-. $scanScript -ConfigPath $ConfigPath -ErrorAction SilentlyContinue 2>$null  # 収集関数を読み込むためのドットソース
+# 収集関数（Get-Current* 等）はモジュールから提供される。スキャン本体はここでは実行しない。
 
 $cfg = Import-PowerShellDataFile -Path $ConfigPath
 # %ProgramData% などの環境変数を実際のパスに展開する
