@@ -38,6 +38,9 @@ $scanScript = Join-Path $ScriptDir 'Invoke-HomeWatchScan.ps1'
 . $scanScript -ConfigPath $ConfigPath -ErrorAction SilentlyContinue 2>$null  # 収集関数を読み込むためのドットソース
 
 $cfg = Import-PowerShellDataFile -Path $ConfigPath
+# %ProgramData% などの環境変数を実際のパスに展開する
+$cfg.LogPath = [Environment]::ExpandEnvironmentVariables($cfg.LogPath)
+$cfg.BaselinePath = [Environment]::ExpandEnvironmentVariables($cfg.BaselinePath)
 
 Write-Host "現在の状態をベースラインとして取得しています..."
 $baseline = @{

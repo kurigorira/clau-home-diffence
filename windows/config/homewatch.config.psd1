@@ -27,8 +27,10 @@
     EventLookbackMinutes     = 20
 
     # ---- 出力先 ----
-    LogPath                  = "$env:ProgramData\HomeWatch\homewatch-alerts.log"
-    BaselinePath             = "$env:ProgramData\HomeWatch\baseline.json"
+    # Import-PowerShellDataFile は変数展開（$env:...）を許可しないため、%ProgramData% 形式で記述する。
+    # スクリプト側で実際のパスに展開する。
+    LogPath                  = '%ProgramData%\HomeWatch\homewatch-alerts.log'
+    BaselinePath             = '%ProgramData%\HomeWatch\baseline.json'
 
     # 同一内容のアラートをこの分数は再通知しない（通知疲れ防止）
     DedupeWindowMinutes      = 60

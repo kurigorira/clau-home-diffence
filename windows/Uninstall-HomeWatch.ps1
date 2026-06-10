@@ -28,6 +28,9 @@ if (Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue) {
 
 if ($RemoveData) {
     $cfg = Import-PowerShellDataFile -Path $ConfigPath
+    # %ProgramData% などの環境変数を実際のパスに展開する
+    $cfg.LogPath = [Environment]::ExpandEnvironmentVariables($cfg.LogPath)
+    $cfg.BaselinePath = [Environment]::ExpandEnvironmentVariables($cfg.BaselinePath)
     foreach ($p in @($cfg.LogPath, $cfg.BaselinePath)) {
         if ($p -and (Test-Path $p)) { Remove-Item -Path $p -Force; Write-Host "削除: $p" }
     }

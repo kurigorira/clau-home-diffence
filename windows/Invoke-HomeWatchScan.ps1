@@ -24,6 +24,9 @@ if (-not $ConfigPath) { $ConfigPath = Join-Path $ScriptDir 'config\homewatch.con
 
 Import-Module (Join-Path $ScriptDir 'modules\HomeWatch.psm1') -Force
 $cfg = Import-PowerShellDataFile -Path $ConfigPath
+# %ProgramData% などの環境変数を実際のパスに展開する
+$cfg.LogPath = [Environment]::ExpandEnvironmentVariables($cfg.LogPath)
+$cfg.BaselinePath = [Environment]::ExpandEnvironmentVariables($cfg.BaselinePath)
 
 # ---------------------------------------------------------------------------
 # データ収集ヘルパー（実 Windows 環境でのみ動作。検知ロジックとは分離）
