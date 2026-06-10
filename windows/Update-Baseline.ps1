@@ -37,8 +37,9 @@ $current = @{
 }
 
 if ($old) {
-    $newPersist = Get-NewItems -Current $current.Persistence -Baseline @($old.Persistence) -KeyProperty 'Id'
-    $newUsers   = Get-NewItems -Current $current.LocalUsers  -Baseline @($old.LocalUsers)  -KeyProperty 'Name'
+    # @() で配列に固定（0/1件でも .Count が使えるように）。$old のフィールドは安全に取り出す。
+    $newPersist = @(Get-NewItems -Current $current.Persistence -Baseline @(Get-PropOr $old 'Persistence' @()) -KeyProperty 'Id')
+    $newUsers   = @(Get-NewItems -Current $current.LocalUsers  -Baseline @(Get-PropOr $old 'LocalUsers' @())  -KeyProperty 'Name')
     Write-Host "ベースラインに新たに取り込まれる項目:"
     Write-Host ("  自動起動 {0} 件 / ユーザー {1} 件" -f $newPersist.Count, $newUsers.Count)
     $newPersist | ForEach-Object { Write-Host "   + [$($_.Type)] $($_.Name)" }
