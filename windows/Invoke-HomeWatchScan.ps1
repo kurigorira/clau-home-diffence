@@ -12,13 +12,17 @@
 #>
 [CmdletBinding()]
 param(
-    [string]$ConfigPath = (Join-Path $PSScriptRoot 'config\homewatch.config.psd1')
+    [string]$ConfigPath
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-Import-Module (Join-Path $PSScriptRoot 'modules\HomeWatch.psm1') -Force
+# スクリプトの所在フォルダを堅牢に解決（一部環境では param 既定値内の $PSScriptRoot が空になるため）
+$ScriptDir = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Definition }
+if (-not $ConfigPath) { $ConfigPath = Join-Path $ScriptDir 'config\homewatch.config.psd1' }
+
+Import-Module (Join-Path $ScriptDir 'modules\HomeWatch.psm1') -Force
 $cfg = Import-PowerShellDataFile -Path $ConfigPath
 
 # ---------------------------------------------------------------------------

@@ -15,11 +15,15 @@
 [CmdletBinding()]
 param(
     [int]$IntervalMinutes = 15,
-    [string]$ConfigPath = (Join-Path $PSScriptRoot 'config\homewatch.config.psd1')
+    [string]$ConfigPath
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
+
+# スクリプトの所在フォルダを堅牢に解決（一部環境では param 既定値内の $PSScriptRoot が空になるため）
+$ScriptDir = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Definition }
+if (-not $ConfigPath) { $ConfigPath = Join-Path $ScriptDir 'config\homewatch.config.psd1' }
 
 # 管理者チェック
 $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
@@ -29,8 +33,8 @@ if (-not $isAdmin) {
     exit 1
 }
 
-Import-Module (Join-Path $PSScriptRoot 'modules\HomeWatch.psm1') -Force
-$scanScript = Join-Path $PSScriptRoot 'Invoke-HomeWatchScan.ps1'
+Import-Module (Join-Path $ScriptDir 'modules\HomeWatch.psm1') -Force
+$scanScript = Join-Path $ScriptDir 'Invoke-HomeWatchScan.ps1'
 . $scanScript -ConfigPath $ConfigPath -ErrorAction SilentlyContinue 2>$null  # 収集関数を読み込むためのドットソース
 
 $cfg = Import-PowerShellDataFile -Path $ConfigPath
