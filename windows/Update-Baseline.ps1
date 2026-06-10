@@ -32,6 +32,9 @@ $old = Get-Baseline -Path $cfg.BaselinePath
 $current = @{
     Persistence = @(Get-CurrentPersistence)
     LocalUsers  = @(Get-CurrentLocalUsers)
+    Listeners   = @(Get-CurrentListeners | ForEach-Object {
+        [pscustomobject]@{ port = [int]$_.LocalPort; process = $_.OwningProcessName }
+    })
 }
 
 if ($old) {

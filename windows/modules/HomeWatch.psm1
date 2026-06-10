@@ -120,25 +120,50 @@ function Test-LogonEvents {
 function Test-NetworkListeners {
     <#
     .SYNOPSIS
-        待ち受け（Listen）中のポートのうち、許可リストに無いものを検知する。
+        待ち受け（Listen）中のポートのうち、「新しく」現れた不審なものだけを検知する。
+    .DESCRIPTION
+        誤検知を抑えるため、次のいずれかに該当する待ち受けは正常としてアラートしない:
+          1) 許可リスト(AllowedPorts)にあるポート
+          2) インストール時のベースライン(BaselinePorts)に既にあった (ポート/プロセス) の組
+          3) エフェメラル（動的）ポート範囲。Windows の RPC が起動毎に使い回す高位ポートで、
+             番号が毎回変わるため除外する（IgnoreEphemeral=$true のとき）。
+        これらに当てはまらない＝「見覚えのない新しい待ち受け」だけを warning として報告する。
     .PARAMETER Listeners
         LocalPort (int) と OwningProcessName (string, 任意) を持つオブジェクト配列。
     .PARAMETER AllowedPorts
-        許可する待ち受けポート番号の配列。
+        常に許可する待ち受けポート番号の配列（config）。
+    .PARAMETER BaselinePorts
+        インストール時に記録した既知の待ち受け。"port" と "process" を持つオブジェクト配列。
+    .PARAMETER EphemeralStart
+        エフェメラルポートの開始番号（既定 49152）。
+    .PARAMETER IgnoreEphemeral
+        エフェメラル範囲を無視するか（既定 $true）。
     #>
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][AllowEmptyCollection()][object[]]$Listeners,
-        [Parameter(Mandatory)][AllowEmptyCollection()][int[]]$AllowedPorts
+        [Parameter(Mandatory)][AllowEmptyCollection()][int[]]$AllowedPorts,
+        [AllowEmptyCollection()][object[]]$BaselinePorts = @(),
+        [int]$EphemeralStart = 49152,
+        [bool]$IgnoreEphemeral = $true
+    )
+    # ベースラインの (port|process) を集合化して高速照合する
+    $baselineKeys = [System.Collections.Generic.HashSet[string]]::new(
+        [string[]]@($BaselinePorts | ForEach-Object {
+            $bp = if ($_.PSObject.Properties.Name -contains 'process') { $_.process } else { '' }
+            "$([int]$_.port)|$bp"
+        })
     )
     $alerts = [System.Collections.Generic.List[object]]::new()
     foreach ($l in $Listeners) {
-        if ($AllowedPorts -notcontains [int]$l.LocalPort) {
-            $proc = if ($l.PSObject.Properties.Name -contains 'OwningProcessName') { $l.OwningProcessName } else { '?' }
-            $alerts.Add((New-HomeWatchAlert -Category 'network' -Severity 'warning' `
-                -Message "許可リストに無いポートが待ち受け中: $($l.LocalPort)" `
-                -Details @{ port = [int]$l.LocalPort; process = $proc }))
-        }
+        $port = [int]$l.LocalPort
+        $proc = if ($l.PSObject.Properties.Name -contains 'OwningProcessName') { $l.OwningProcessName } else { '?' }
+        if ($AllowedPorts -contains $port) { continue }
+        if ($IgnoreEphemeral -and $port -ge $EphemeralStart) { continue }
+        if ($baselineKeys.Contains("$port|$proc")) { continue }
+        $alerts.Add((New-HomeWatchAlert -Category 'network' -Severity 'warning' `
+            -Message "見覚えのない待ち受けポートを検出: $port ($proc)" `
+            -Details @{ port = $port; process = $proc }))
     }
     return $alerts.ToArray()
 }
@@ -172,6 +197,8 @@ function Test-Persistence {
     )
     $alerts = [System.Collections.Generic.List[object]]::new()
     foreach ($item in (Get-NewItems -Current $Current -Baseline $Baseline -KeyProperty 'Id')) {
+        # HomeWatch 自身のタスクは自作自演の誤検知になるため除外する
+        if ($item.Name -eq 'HomeWatch-Scan' -or $item.Id -like '*HomeWatch-Scan') { continue }
         $type = if ($item.PSObject.Properties.Name -contains 'Type') { $item.Type } else { 'autostart' }
         $alerts.Add((New-HomeWatchAlert -Category 'persistence' -Severity 'alert' `
             -Message "新しい自動起動エントリを検出（$type）: $($item.Name)" `

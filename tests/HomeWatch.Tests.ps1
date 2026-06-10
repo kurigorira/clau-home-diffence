@@ -68,7 +68,7 @@ Describe 'Test-LogonEvents' {
 }
 
 Describe 'Test-NetworkListeners' {
-    It '許可リスト外のポートを検知する' {
+    It '許可リストにもベースラインにも無い新規ポートを検知する' {
         $listeners = @(
             [pscustomobject]@{ LocalPort = 445; OwningProcessName = 'System' },
             [pscustomobject]@{ LocalPort = 4444; OwningProcessName = 'evil' }
@@ -82,6 +82,25 @@ Describe 'Test-NetworkListeners' {
         $listeners = @([pscustomobject]@{ LocalPort = 445 })
         (Test-NetworkListeners -Listeners $listeners -AllowedPorts @(445)).Count | Should -Be 0
     }
+
+    It 'ベースラインに記録済みの (ポート/プロセス) は検知しない' {
+        $listeners = @([pscustomobject]@{ LocalPort = 7679; OwningProcessName = 'GoogleDriveFS' })
+        $baseline = @([pscustomobject]@{ port = 7679; process = 'GoogleDriveFS' })
+        (Test-NetworkListeners -Listeners $listeners -AllowedPorts @() -BaselinePorts $baseline).Count | Should -Be 0
+    }
+
+    It 'エフェメラル範囲(>=49152)の待ち受けは既定で無視する' {
+        $listeners = @([pscustomobject]@{ LocalPort = 49669; OwningProcessName = 'svchost' })
+        (Test-NetworkListeners -Listeners $listeners -AllowedPorts @()).Count | Should -Be 0
+    }
+
+    It 'ベースラインと違うプロセスが同じポートを使い始めたら検知する' {
+        $listeners = @([pscustomobject]@{ LocalPort = 7679; OwningProcessName = 'evil' })
+        $baseline = @([pscustomobject]@{ port = 7679; process = 'GoogleDriveFS' })
+        $alerts = Test-NetworkListeners -Listeners $listeners -AllowedPorts @() -BaselinePorts $baseline
+        $alerts.Count | Should -Be 1
+        $alerts[0].Details.process | Should -Be 'evil'
+    }
 }
 
 Describe 'Test-Persistence / Test-NewLocalUsers' {
@@ -94,6 +113,12 @@ Describe 'Test-Persistence / Test-NewLocalUsers' {
         $alerts = Test-Persistence -Current $current -Baseline $baseline
         $alerts.Count | Should -Be 1
         $alerts[0].Details.name | Should -Be 'evil.exe'
+    }
+
+    It 'HomeWatch 自身のタスクは検知しない（自作自演の誤検知防止）' {
+        $baseline = @()
+        $current = @([pscustomobject]@{ Id = 'task:\HomeWatch-Scan'; Name = 'HomeWatch-Scan'; Type = 'ScheduledTask' })
+        (Test-Persistence -Current $current -Baseline $baseline).Count | Should -Be 0
     }
 
     It 'ベースラインに無いローカルユーザーを検知する' {

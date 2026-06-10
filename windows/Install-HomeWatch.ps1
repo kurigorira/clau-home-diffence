@@ -42,16 +42,8 @@ $cfg = Import-PowerShellDataFile -Path $ConfigPath
 $cfg.LogPath = [Environment]::ExpandEnvironmentVariables($cfg.LogPath)
 $cfg.BaselinePath = [Environment]::ExpandEnvironmentVariables($cfg.BaselinePath)
 
-Write-Host "現在の状態をベースラインとして取得しています..."
-$baseline = @{
-    Persistence = @(Get-CurrentPersistence)
-    LocalUsers  = @(Get-CurrentLocalUsers)
-}
-Save-Baseline -Baseline $baseline -Path $cfg.BaselinePath
-Write-Host "ベースライン保存: $($cfg.BaselinePath)"
-Write-Host ("  自動起動エントリ {0} 件 / ローカルユーザー {1} 件" -f $baseline.Persistence.Count, $baseline.LocalUsers.Count)
-
-# タスクスケジューラ登録（SYSTEM 権限で IntervalMinutes ごと）
+# 先にタスクスケジューラへ登録する。こうすると直後に取るベースラインに HomeWatch 自身の
+# タスクが含まれ、初回スキャンで自分自身を「新しい自動起動」と誤検知しない。
 $taskName = 'HomeWatch-Scan'
 $action = New-ScheduledTaskAction -Execute 'powershell.exe' `
     -Argument "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$scanScript`""
@@ -62,8 +54,22 @@ $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatt
 
 Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger `
     -Principal $principal -Settings $settings -Force | Out-Null
-
 Write-Host "タスク登録完了: '$taskName' を $IntervalMinutes 分ごとに実行します。"
+
+Write-Host "現在の状態をベースラインとして取得しています..."
+$baseline = @{
+    Persistence = @(Get-CurrentPersistence)
+    LocalUsers  = @(Get-CurrentLocalUsers)
+    # 現在の待ち受けポートを許可済みとして記録（以後は新規の待ち受けだけを検知）
+    Listeners   = @(Get-CurrentListeners | ForEach-Object {
+        [pscustomobject]@{ port = [int]$_.LocalPort; process = $_.OwningProcessName }
+    })
+}
+Save-Baseline -Baseline $baseline -Path $cfg.BaselinePath
+Write-Host "ベースライン保存: $($cfg.BaselinePath)"
+Write-Host ("  自動起動エントリ {0} 件 / ローカルユーザー {1} 件 / 待ち受けポート {2} 件" -f `
+    $baseline.Persistence.Count, $baseline.LocalUsers.Count, $baseline.Listeners.Count)
+
 Write-Host "初回スキャンを実行します..."
 & $scanScript -ConfigPath $ConfigPath
 Write-Host "セットアップ完了。アラートは $($cfg.LogPath) と画面通知で確認できます。"

@@ -151,8 +151,12 @@ function Add-AlertBatch {
     }
 }
 
+# 旧バージョンのベースライン（Listeners 無し）でも動くようにガードする
+$baselineListeners = if ($baseline.PSObject.Properties.Name -contains 'Listeners') { @($baseline.Listeners) } else { @() }
+
 Add-AlertBatch (Test-LogonEvents -Events @(Get-RecentLogonEvents -Minutes $cfg.EventLookbackMinutes) -Config $cfg)
-Add-AlertBatch (Test-NetworkListeners -Listeners @(Get-CurrentListeners) -AllowedPorts $cfg.AllowedListeningPorts)
+Add-AlertBatch (Test-NetworkListeners -Listeners @(Get-CurrentListeners) -AllowedPorts $cfg.AllowedListeningPorts `
+    -BaselinePorts $baselineListeners -EphemeralStart $cfg.EphemeralPortStart -IgnoreEphemeral $cfg.IgnoreEphemeralPorts)
 Add-AlertBatch (Test-Persistence -Current @(Get-CurrentPersistence) -Baseline @($baseline.Persistence))
 Add-AlertBatch (Test-NewLocalUsers -Current @(Get-CurrentLocalUsers) -Baseline @($baseline.LocalUsers))
 Add-AlertBatch (Test-MicCameraAccess -AccessRecords @(Get-MicCameraAccess) -AllowedApps $cfg.AllowedMicCameraApps -SinceHours $cfg.MicCameraSinceHours)
