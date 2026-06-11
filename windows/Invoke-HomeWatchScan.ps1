@@ -71,4 +71,11 @@ foreach ($a in $alerts) {
     }
 }
 
+# ハートビート：異常が無くても毎回 1 行残し、稼働していることを確認できるようにする
+$dir = Split-Path -Parent $cfg.LogPath
+if ($dir -and -not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+(@{ Time = (Get-Date).ToString('o'); event = 'scan_ok'; severity = 'info';
+    detected = $alerts.Count; notified = $notified } | ConvertTo-Json -Compress) |
+    Add-Content -Path $cfg.LogPath -Encoding UTF8
+
 Write-Output "HomeWatch スキャン完了: 検知 $($alerts.Count) 件 / 新規通知 $notified 件 (ログ: $($cfg.LogPath))"

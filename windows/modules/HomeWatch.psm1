@@ -288,8 +288,12 @@ function Write-HomeWatchLog {
         $recent = Get-Content -Path $Path -Tail 200 -ErrorAction SilentlyContinue
         foreach ($line in $recent) {
             try { $prev = $line | ConvertFrom-Json } catch { continue }
-            if ($prev.Category -eq $Alert.Category -and $prev.Message -eq $Alert.Message `
-                -and ([datetime]$prev.Time) -ge $cutoff) {
+            # ハートビート等 Category を持たない行も混在するため安全に取り出す
+            $prevTimeRaw = Get-PropOr $prev 'Time' $null
+            if ($null -eq $prevTimeRaw) { continue }
+            if ((Get-PropOr $prev 'Category' '') -eq $Alert.Category `
+                -and (Get-PropOr $prev 'Message' '') -eq $Alert.Message `
+                -and ([datetime]$prevTimeRaw) -ge $cutoff) {
                 return $false  # 直近に同一アラートあり → 抑制
             }
         }

@@ -41,6 +41,10 @@ if errorlevel 1 (
 )
 
 echo.
+echo --- 自動監視タスクの稼働状況（最終実行/次回/結果）---
+powershell -NoProfile -Command "Get-ScheduledTask -TaskName HomeWatch-Scan,HomeWatch-NetScan -ErrorAction SilentlyContinue | Get-ScheduledTaskInfo | Format-Table @{n='タスク';e={$_.TaskName}}, LastRunTime, NextRunTime, @{n='結果(0=正常)';e={$_.LastTaskResult}} -AutoSize"
+
+echo.
 echo [3/3] 最近のアラート（各ログの直近10件）...
 echo --- PC 監視ログ ---
 powershell -NoProfile -Command "$p=Join-Path $env:ProgramData 'HomeWatch\homewatch-alerts.log'; if(Test-Path $p){Get-Content $p -Tail 10}else{'  (まだアラートはありません)'}"
