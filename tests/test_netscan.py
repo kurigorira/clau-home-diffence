@@ -114,6 +114,16 @@ class TestMergeKnown(unittest.TestCase):
         self.assertEqual(merged["de:ad:be:ef:12:34"], "unnamed-1234")
 
 
+class TestArgParsing(unittest.TestCase):
+    def test_notify_ok_flag_defaults_false(self):
+        args = ns.build_parser().parse_args(["scan"])
+        self.assertFalse(args.notify_ok)
+
+    def test_notify_ok_flag_can_be_set(self):
+        args = ns.build_parser().parse_args(["scan", "--notify-ok"])
+        self.assertTrue(args.notify_ok)
+
+
 class TestKnownFileRoundTrip(unittest.TestCase):
     def test_save_and_load(self):
         import tempfile

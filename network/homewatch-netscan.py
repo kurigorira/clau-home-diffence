@@ -348,6 +348,12 @@ def cmd_scan(args) -> int:
         {"time": timestamp, "event": "scan_ok", "severity": "info",
          "known_seen": len([m for m in current if m in known])},
     )
+    # --notify-ok 指定時は、異常が無くても「動作中」のトーストを出す（既定はオフ）
+    if getattr(args, "notify_ok", False):
+        desktop_notify(
+            "HomeWatch: ネット監視OK",
+            f"在線 {len(current)} 台、すべて既知端末です。",
+        )
     print(f"OK: 在線 {len(current)} 台、すべて既知端末です。")
     return 0
 
@@ -361,6 +367,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help="アラートログ(JSON Lines)のパス")
     common.add_argument("--cidr", default=None,
                         help="ping スイープ対象の CIDR 例: 192.168.1.0/24")
+    common.add_argument("--notify-ok", action="store_true",
+                        help="異常が無くても毎回『監視OK』トーストを出す（既定はオフ）")
 
     parser = argparse.ArgumentParser(
         description="HomeWatch 自宅LAN 侵入検知スキャナ", parents=[common]

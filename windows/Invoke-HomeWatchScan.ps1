@@ -78,4 +78,10 @@ if ($dir -and -not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -
     detected = $alerts.Count; notified = $notified } | ConvertTo-Json -Compress) |
     Add-Content -Path $cfg.LogPath -Encoding UTF8
 
+# HeartbeatToast が有効で、かつ今回アラート通知を出していなければ「監視OK」トーストを出す
+if ($cfg.ContainsKey('HeartbeatToast') -and $cfg.HeartbeatToast -and $notified -eq 0) {
+    Send-HomeWatchAlert -Alert (New-HomeWatchAlert -Category 'heartbeat' -Severity 'info' `
+        -Message "PC監視OK（検知 $($alerts.Count) 件）")
+}
+
 Write-Output "HomeWatch スキャン完了: 検知 $($alerts.Count) 件 / 新規通知 $notified 件 (ログ: $($cfg.LogPath))"

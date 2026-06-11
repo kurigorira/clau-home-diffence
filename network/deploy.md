@@ -141,6 +141,8 @@ Register-ScheduledTask -TaskName 'HomeWatch-NetScan' -Action $action -Trigger $t
 - 5分ごとにスキャンし、未知の端末が出たら通知＋ログ。
 - 確認: `Get-ScheduledTask -TaskName HomeWatch-NetScan`、手動実行: `Start-ScheduledTask -TaskName HomeWatch-NetScan`。
 - 解除: `Unregister-ScheduledTask -TaskName HomeWatch-NetScan -Confirm:$false`。
+- **毎回「監視OK」トーストを出したい場合**は、`scan` の後ろに `--notify-ok` を足す
+  （`-Argument "... scan --notify-ok"`）。※5分ごとに通知が出るので、間隔を15〜30分に延ばすのがおすすめ。
 
 ## W-6. 新しい端末が増えたとき（誤検知の解消）
 - 自分/家族の端末なら、`known-devices.json` の `devices` に `"aa:bb:cc:dd:ee:ff": "○○のスマホ"` を追記。
