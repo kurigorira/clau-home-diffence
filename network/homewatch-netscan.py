@@ -314,6 +314,38 @@ def cmd_init(args) -> int:
     return 0
 
 
+def cmd_list(args) -> int:
+    """いまネットワークに居る端末を、既知リストの名前付きで一覧表示する。
+
+    注意: スリープ中のスマホ等はスキャンに応答せず表示されないことがある。
+    表示されない ＝ 不在 とは限らない（未知端末アラートには影響しない）。
+    """
+    known = load_known(args.known)
+    current = discover(args.cidr)
+    if not current:
+        sys.stderr.write("在線端末を取得できませんでした。--cidr 指定を確認してください。\n")
+        return 1
+    print(f"いまオンラインの端末: {len(current)} 台")
+    print(f"{'IP':<16} {'MAC':<18} 名前")
+    print("-" * 60)
+    unknown = 0
+    for mac, ip in sorted(current.items(), key=lambda kv: kv[1]):
+        name = known.get(mac)
+        if name is None:
+            name = "★未知の端末★"
+            unknown += 1
+        print(f"{ip:<16} {mac:<18} {name}")
+    if unknown:
+        print(f"\n★未知の端末★ が {unknown} 台います。自分の機器なら known-devices.json に登録してください。")
+    if known:
+        offline = sorted(set(known) - set(current))
+        if offline:
+            print(f"\n登録済みで今は見えない端末: {len(offline)} 台（スリープ中の可能性。異常ではありません）")
+            for mac in offline:
+                print(f"  {mac:<18} {known[mac]}")
+    return 0
+
+
 def cmd_scan(args) -> int:
     known = load_known(args.known)
     if not known:
@@ -378,6 +410,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="現在の在線端末を既知として登録").set_defaults(func=cmd_init)
     sub.add_parser("scan", parents=[common],
                    help="スキャンして未知端末を検出").set_defaults(func=cmd_scan)
+    sub.add_parser("list", parents=[common],
+                   help="いまオンラインの端末を名前付きで一覧表示").set_defaults(func=cmd_list)
     # --init / --scan のフラグ形式も許容
     return parser
 
