@@ -58,7 +58,8 @@ $baselineUsers       = @(Get-PropOr $baseline 'LocalUsers' @())
 Add-AlertBatch (Test-LogonEvents -Events @(Get-RecentLogonEvents -Minutes $cfg.EventLookbackMinutes) -Config $cfg)
 Add-AlertBatch (Test-NetworkListeners -Listeners @(Get-CurrentListeners) -AllowedPorts $cfg.AllowedListeningPorts `
     -BaselinePorts $baselineListeners -EphemeralStart $cfg.EphemeralPortStart -IgnoreEphemeral $cfg.IgnoreEphemeralPorts)
-Add-AlertBatch (Test-Persistence -Current @(Get-CurrentPersistence) -Baseline $baselinePersistence)
+Add-AlertBatch (Test-Persistence -Current @(Get-CurrentPersistence) -Baseline $baselinePersistence `
+    -IgnorePatterns @(Get-PropOr $cfg 'PersistenceIgnorePatterns' @()))
 Add-AlertBatch (Test-NewLocalUsers -Current @(Get-CurrentLocalUsers) -Baseline $baselineUsers)
 Add-AlertBatch (Test-MicCameraAccess -AccessRecords @(Get-MicCameraAccess) -AllowedApps $cfg.AllowedMicCameraApps -SinceHours $cfg.MicCameraSinceHours)
 

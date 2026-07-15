@@ -78,16 +78,27 @@ function Build-ReportBody {
     $status = if ($pcAlerts.Count -eq 0 -and $netAlerts.Count -eq 0) { "✅ 異常なし" } else { "⚠️ 要確認のアラートがあります" }
     [void]$sb.AppendLine("総合判定: $status")
     [void]$sb.AppendLine("")
+
+    # 同一内容のアラートは 1 行にまとめ、回数と最終時刻を付ける（読みやすさ優先）
     [void]$sb.AppendLine("■ PC 監視（直近24時間）")
     [void]$sb.AppendLine("  アラート: $($pcAlerts.Count) 件 / スキャン実行: $($pcBeats.Count) 回")
-    foreach ($a in $pcAlerts) {
-        [void]$sb.AppendLine("  - [$(Get-PropOr $a 'Severity' '?')] $(Get-PropOr $a 'Time' '') $(Get-PropOr $a 'Message' '')")
+    $pcGroups = @($pcAlerts | Group-Object { "[{0}] {1}" -f (Get-PropOr $_ 'Severity' '?'), (Get-PropOr $_ 'Message' '') } |
+                  Sort-Object Count -Descending)
+    foreach ($g in $pcGroups) {
+        $last = ($g.Group | ForEach-Object { Get-PropOr $_ 'Time' '' } | Sort-Object | Select-Object -Last 1)
+        $suffix = if ($g.Count -gt 1) { "（$($g.Count) 回 / 最終 $last）" } else { "（$last）" }
+        [void]$sb.AppendLine("  - $($g.Name) $suffix")
     }
     [void]$sb.AppendLine("")
+
     [void]$sb.AppendLine("■ ネットワーク監視（直近24時間）")
     [void]$sb.AppendLine("  アラート: $($netAlerts.Count) 件 / スキャン実行: $($netBeats.Count) 回")
-    foreach ($a in $netAlerts) {
-        [void]$sb.AppendLine("  - $(Get-PropOr $a 'time' '') 未知の端末 $(Get-PropOr $a 'ip' '?') ($(Get-PropOr $a 'mac' '?'))")
+    $netGroups = @($netAlerts | Group-Object { "{0} ({1})" -f (Get-PropOr $_ 'ip' '?'), (Get-PropOr $_ 'mac' '?') } |
+                   Sort-Object Count -Descending)
+    foreach ($g in $netGroups) {
+        $last = ($g.Group | ForEach-Object { Get-PropOr $_ 'time' '' } | Sort-Object | Select-Object -Last 1)
+        [void]$sb.AppendLine("  - 未知の端末 $($g.Name) — $($g.Count) 回検出 / 最終 $last")
+        [void]$sb.AppendLine("      → 自分の機器なら network\known-devices.json に登録すると止まります")
     }
     [void]$sb.AppendLine("")
 
@@ -98,7 +109,9 @@ function Build-ReportBody {
             $info = Get-ScheduledTaskInfo -TaskName $name -ErrorAction Stop
             [void]$sb.AppendLine("  $name : 最終実行 $($info.LastRunTime) / 結果 $($info.LastTaskResult) (0=正常)")
         } catch {
-            [void]$sb.AppendLine("  $name : タスクが見つかりません")
+            # SYSTEM 権限で登録したタスクは、非管理者のレポート実行からは参照できないことがある。
+            # 実際に動いているかはスキャン実行回数（ハートビート）で判定する。
+            [void]$sb.AppendLine("  $name : タスク情報を参照できません（権限の関係。稼働はスキャン実行回数で確認）")
         }
     }
     if ($pcBeats.Count -eq 0) {

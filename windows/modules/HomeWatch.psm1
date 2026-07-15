@@ -100,9 +100,15 @@ function Test-LogonEvents {
     }
 
     # --- 深夜帯のログオン成功 ---
+    # 対象は「人が操作した」ログオンのみ: 2=対話, 7=ロック解除, 10=RDP, 11=キャッシュ対話。
+    # 4=バッチ(スケジュールタスク) や 5=サービス は定期タスクが夜間も発生させるため対象外
+    # （HomeWatch 自身の定期実行で毎晩誤検知になるのを防ぐ）。
     $nightStart = [int]$Config.NightHourStart
     $nightEnd = [int]$Config.NightHourEnd
+    $interactiveTypes = 2, 7, 10, 11
     foreach ($e in @($Events | Where-Object { $_.Id -eq 4624 })) {
+        $lt = Get-PropOr $e 'LogonType' $null
+        if ($lt -notin $interactiveTypes) { continue }
         $hour = ([datetime]$e.TimeCreated).Hour
         $isNight = if ($nightStart -le $nightEnd) {
             ($hour -ge $nightStart -and $hour -lt $nightEnd)
@@ -111,8 +117,8 @@ function Test-LogonEvents {
         }
         if ($isNight) {
             $alerts.Add((New-HomeWatchAlert -Category 'logon' -Severity 'warning' `
-                -Message "深夜帯（$hour 時）のログオン成功" `
-                -Details @{ hour = $hour; user = $e.TargetUserName }))
+                -Message "深夜帯（$hour 時）の対話ログオン成功" `
+                -Details @{ hour = $hour; user = $e.TargetUserName; logonType = $lt }))
         }
     }
 
@@ -206,12 +212,18 @@ function Test-Persistence {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)][AllowEmptyCollection()][object[]]$Current,
-        [Parameter(Mandatory)][AllowEmptyCollection()][object[]]$Baseline
+        [Parameter(Mandatory)][AllowEmptyCollection()][object[]]$Baseline,
+        [AllowEmptyCollection()][string[]]$IgnorePatterns = @()
     )
+    # HomeWatch 自身のタスクは常に除外（自作自演の誤検知防止）
+    $patterns = @('HomeWatch-*') + @($IgnorePatterns | Where-Object { $_ })
     $alerts = [System.Collections.Generic.List[object]]::new()
     foreach ($item in (Get-NewItems -Current $Current -Baseline $Baseline -KeyProperty 'Id')) {
-        # HomeWatch 自身のタスクは自作自演の誤検知になるため除外する
-        if ($item.Name -eq 'HomeWatch-Scan' -or $item.Id -like '*HomeWatch-Scan') { continue }
+        $ignored = $false
+        foreach ($pat in $patterns) {
+            if ($item.Name -like $pat) { $ignored = $true; break }
+        }
+        if ($ignored) { continue }
         $type = Get-PropOr $item 'Type' 'autostart'
         $alerts.Add((New-HomeWatchAlert -Category 'persistence' -Severity 'alert' `
             -Message "新しい自動起動エントリを検出（$type）: $($item.Name)" `

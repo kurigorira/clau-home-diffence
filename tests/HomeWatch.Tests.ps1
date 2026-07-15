@@ -46,10 +46,19 @@ Describe 'Test-LogonEvents' {
         ($alerts | Where-Object { $_.Message -like '*RDP*' }).Count | Should -Be 1
     }
 
-    It '深夜帯のログオンを警告する' {
+    It '深夜帯の対話ログオン(LogonType 2)を警告する' {
         $events = @([pscustomobject]@{ Id = 4624; TimeCreated = (Get-Date '2026-01-01T03:00:00'); LogonType = 2; TargetUserName = 'user' })
         $alerts = Test-LogonEvents -Events $events -Config $script:cfg
         ($alerts | Where-Object { $_.Message -like '*深夜*' }).Count | Should -Be 1
+    }
+
+    It '深夜帯でもバッチ(4)/サービス(5)ログオンは警告しない（定期タスクの誤検知防止）' {
+        $events = @(
+            [pscustomobject]@{ Id = 4624; TimeCreated = (Get-Date '2026-01-01T03:00:00'); LogonType = 4; TargetUserName = 'user' },
+            [pscustomobject]@{ Id = 4624; TimeCreated = (Get-Date '2026-01-01T03:10:00'); LogonType = 5; TargetUserName = 'SYSTEM' }
+        )
+        $alerts = Test-LogonEvents -Events $events -Config $script:cfg
+        ($alerts | Where-Object { $_.Message -like '*深夜*' }).Count | Should -Be 0
     }
 
     It '新規ユーザー作成(4720)と管理者グループ追加(4732)をアラートする' {
@@ -115,10 +124,27 @@ Describe 'Test-Persistence / Test-NewLocalUsers' {
         $alerts[0].Details.name | Should -Be 'evil.exe'
     }
 
-    It 'HomeWatch 自身のタスクは検知しない（自作自演の誤検知防止）' {
+    It 'HomeWatch 自身のタスク群は検知しない（自作自演の誤検知防止）' {
         $baseline = @()
-        $current = @([pscustomobject]@{ Id = 'task:\HomeWatch-Scan'; Name = 'HomeWatch-Scan'; Type = 'ScheduledTask' })
+        $current = @(
+            [pscustomobject]@{ Id = 'task:\HomeWatch-Scan'; Name = 'HomeWatch-Scan'; Type = 'ScheduledTask' },
+            [pscustomobject]@{ Id = 'task:\HomeWatch-NetScan'; Name = 'HomeWatch-NetScan'; Type = 'ScheduledTask' },
+            [pscustomobject]@{ Id = 'task:\HomeWatch-DailyReport'; Name = 'HomeWatch-DailyReport'; Type = 'ScheduledTask' }
+        )
         (Test-Persistence -Current $current -Baseline $baseline).Count | Should -Be 0
+    }
+
+    It 'IgnorePatterns にマッチする名前変化タスクは検知しない' {
+        $baseline = @()
+        $current = @(
+            [pscustomobject]@{ Id = 'task:\SoftLandingDeferralTask-{guid}'; Name = 'SoftLandingDeferralTask-{guid}'; Type = 'ScheduledTask' },
+            [pscustomobject]@{ Id = 'task:\GoogleUpdaterTaskSystem152.0'; Name = 'GoogleUpdaterTaskSystem152.0'; Type = 'ScheduledTask' },
+            [pscustomobject]@{ Id = 'task:\evil-task'; Name = 'evil-task'; Type = 'ScheduledTask' }
+        )
+        $alerts = Test-Persistence -Current $current -Baseline $baseline `
+            -IgnorePatterns @('SoftLanding*Task*', 'GoogleUpdaterTask*')
+        $alerts.Count | Should -Be 1
+        $alerts[0].Details.name | Should -Be 'evil-task'
     }
 
     It 'ベースラインに無いローカルユーザーを検知する' {

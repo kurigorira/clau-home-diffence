@@ -27,6 +27,16 @@
     AllowedMicCameraApps     = @('Teams', 'Zoom', 'Camera', 'Skype', 'WhatsApp', 'Discord')
     MicCameraSinceHours      = 24
 
+    # ---- 自動起動検知の除外パターン（ワイルドカード可）----
+    # Windows/正規アプリが「毎回名前(GUID/バージョン)を変えて」作り直すタスクは、ベースライン方式では
+    # 恒久的に誤検知になるため、名前パターンで除外する。HomeWatch-* は常に自動除外。
+    PersistenceIgnorePatterns = @(
+        'SoftLanding*Task*',          # Windows のおすすめ表示(コンテンツ配信)が随時作り直すタスク
+        'GoogleUpdaterTask*',         # Google 更新タスク（バージョン番号入りで毎回名前が変わる）
+        'MicrosoftEdgeUpdateTask*',   # Edge 更新タスク
+        'OneDrive*Update*'            # OneDrive 更新タスク
+    )
+
     # ---- 検知対象イベントの取得範囲 ----
     # 直近この分数のセキュリティイベントを走査（タスクの実行間隔より少し長めに）
     EventLookbackMinutes     = 20
