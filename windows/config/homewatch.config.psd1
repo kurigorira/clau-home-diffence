@@ -42,4 +42,14 @@
 
     # 異常が無くても毎回「監視OK」トーストを出すか（既定はオフ。オンにすると15分ごとに通知が出る）
     HeartbeatToast           = $false
+
+    # ---- 日次メールレポート（Send-HomeWatchReport.ps1）----
+    # Gmail の場合: SmtpServer は smtp.gmail.com / Port 587、パスワードは「アプリパスワード」
+    # （https://myaccount.google.com/apppasswords ・2段階認証が前提）。
+    # パスワードは -Setup 実行時に暗号化保存され、この設定ファイルには書かない。
+    ReportSmtpServer         = 'smtp.gmail.com'
+    ReportSmtpPort           = 587
+    ReportFrom               = 'g5kurihara@gmail.com'
+    ReportTo                 = 'g5kurihara@gmail.com'
+    ReportCredentialPath     = '%ProgramData%\HomeWatch\report-smtp.cred'
 }

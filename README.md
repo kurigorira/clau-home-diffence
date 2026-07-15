@@ -36,6 +36,7 @@
 | `docs/account-security.md` | アカウント乗っ取り検知（2段階認証・サインイン通知・漏洩チェック） |
 | `docs/how-it-works.md` | 各ツールが何を見るか・アラートの読み方・誤検知時の対処 |
 | `windows/` | Windows PC 用 監視ツール（PowerShell・追加ソフト不要） |
+| `windows/Send-HomeWatchReport.ps1` | **日次メールレポート**（直近24hの監視結果を毎朝メール。`-Setup` で初期設定） |
 | `network/` | 自宅 LAN 侵入検知スキャナ（Python3・依存最小） |
 | `tools/check-pwned-password.py` | 漏洩パスワード確認（HIBP k-匿名） |
 | `tests/` | 検知ロジックの自動テスト（pytest / Pester） |

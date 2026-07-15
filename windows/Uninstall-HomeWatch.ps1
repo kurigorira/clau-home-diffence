@@ -18,12 +18,15 @@ $ErrorActionPreference = 'Stop'
 $ScriptDir = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Definition }
 if (-not $ConfigPath) { $ConfigPath = Join-Path $ScriptDir 'config\homewatch.config.psd1' }
 
-$taskName = 'HomeWatch-Scan'
-if (Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue) {
-    Unregister-ScheduledTask -TaskName $taskName -Confirm:$false
-    Write-Host "タスク '$taskName' を削除しました。"
-} else {
-    Write-Host "タスク '$taskName' は登録されていません。"
+Import-Module (Join-Path $ScriptDir 'modules\HomeWatch.psm1') -Force
+
+foreach ($taskName in @('HomeWatch-Scan', 'HomeWatch-NetScan', 'HomeWatch-DailyReport')) {
+    if (Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue) {
+        Unregister-ScheduledTask -TaskName $taskName -Confirm:$false
+        Write-Host "タスク '$taskName' を削除しました。"
+    } else {
+        Write-Host "タスク '$taskName' は登録されていません。"
+    }
 }
 
 if ($RemoveData) {
@@ -31,7 +34,9 @@ if ($RemoveData) {
     # %ProgramData% などの環境変数を実際のパスに展開する
     $cfg.LogPath = [Environment]::ExpandEnvironmentVariables($cfg.LogPath)
     $cfg.BaselinePath = [Environment]::ExpandEnvironmentVariables($cfg.BaselinePath)
-    foreach ($p in @($cfg.LogPath, $cfg.BaselinePath)) {
+    $credPath = [Environment]::ExpandEnvironmentVariables(
+        [string](Get-PropOr $cfg 'ReportCredentialPath' '%ProgramData%\HomeWatch\report-smtp.cred'))
+    foreach ($p in @($cfg.LogPath, $cfg.BaselinePath, $credPath)) {
         if ($p -and (Test-Path $p)) { Remove-Item -Path $p -Force; Write-Host "削除: $p" }
     }
     $dir = Split-Path -Parent $cfg.BaselinePath
