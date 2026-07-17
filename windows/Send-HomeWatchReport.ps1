@@ -148,6 +148,10 @@ function Send-Report {
         -From $mailFrom -To $mailTo -Subject $subject -Body $body `
         -Encoding ([System.Text.Encoding]::UTF8) -Credential $cred
     Write-Output "レポートを送信しました: $mailTo ($subject)"
+
+    # 送信成功の記録（診断用）
+    $statusPath = Join-Path (Split-Path -Parent $credPath) 'report-status.log'
+    "$((Get-Date).ToString('o')) SENT $subject" | Add-Content -Path $statusPath -Encoding UTF8
 }
 
 function Invoke-Setup {
@@ -155,15 +159,20 @@ function Invoke-Setup {
     Write-Host "送信元(From): $mailFrom / 送信先(To): $mailTo / SMTP: ${smtpServer}:${smtpPort}"
     Write-Host "（変更したい場合は config\homewatch.config.psd1 の Report* を編集して再実行）"
     Write-Host ""
-    Write-Host "SMTP のユーザー名（通常は送信元メールアドレス）とパスワードを入力してください。"
-    Write-Host "Gmail の場合は通常のパスワードではなく『アプリパスワード』が必要です:"
-    Write-Host "  https://myaccount.google.com/apppasswords （2段階認証の有効化が前提）"
-    $cred = Get-Credential -UserName $mailFrom -Message "SMTP 認証情報（Gmail はアプリパスワード）"
+    if (Test-Path $credPath) {
+        Write-Host "既存の資格情報を使います: $credPath"
+        Write-Host "（パスワードを入れ直したい場合は、このファイルを削除して -Setup を再実行）"
+    } else {
+        Write-Host "SMTP のユーザー名（通常は送信元メールアドレス）とパスワードを入力してください。"
+        Write-Host "Gmail の場合は通常のパスワードではなく『アプリパスワード』が必要です:"
+        Write-Host "  https://myaccount.google.com/apppasswords （2段階認証の有効化が前提）"
+        $cred = Get-Credential -UserName $mailFrom -Message "SMTP 認証情報（Gmail はアプリパスワード）"
 
-    $dir = Split-Path -Parent $credPath
-    if ($dir -and -not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
-    $cred | Export-Clixml -Path $credPath
-    Write-Host "資格情報を暗号化保存しました: $credPath（このユーザーのみ復号可能）"
+        $dir = Split-Path -Parent $credPath
+        if ($dir -and -not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+        $cred | Export-Clixml -Path $credPath
+        Write-Host "資格情報を暗号化保存しました: $credPath（このユーザーのみ復号可能）"
+    }
 
     # 毎日のタスク登録（ログオン中ユーザーで実行。DPAPI 復号のため同一ユーザー必須）
     $self = Join-Path $ScriptDir 'Send-HomeWatchReport.ps1'
@@ -171,7 +180,9 @@ function Invoke-Setup {
         -Argument "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File `"$self`""
     $trigger = New-ScheduledTaskTrigger -Daily -At $DailyAt
     $principal = New-ScheduledTaskPrincipal -UserId "$env:USERDOMAIN\$env:USERNAME" -LogonType Interactive
-    $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
+    # -WakeToRun: 送信時刻にスリープ中でも PC を起こして実行する
+    # -StartWhenAvailable: 時刻を過ぎて起動/ログオンした場合も、可能になり次第実行する
+    $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -WakeToRun
     Register-ScheduledTask -TaskName 'HomeWatch-DailyReport' -Action $action -Trigger $trigger `
         -Principal $principal -Settings $settings -Force | Out-Null
     Write-Host "タスク登録完了: 'HomeWatch-DailyReport' を毎日 $DailyAt に実行します。"
@@ -181,4 +192,13 @@ function Invoke-Setup {
     Write-Host "設定完了。届いたメールを確認してください（迷惑メールフォルダも）。"
 }
 
-if ($Setup) { Invoke-Setup } else { Send-Report }
+# 実行。失敗した場合は診断用ログ（report-status.log）に理由を残す
+try {
+    if ($Setup) { Invoke-Setup } else { Send-Report }
+} catch {
+    $statusPath = Join-Path (Split-Path -Parent $credPath) 'report-status.log'
+    $dir = Split-Path -Parent $statusPath
+    if ($dir -and -not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+    "$((Get-Date).ToString('o')) ERROR $($_.Exception.Message)" | Add-Content -Path $statusPath -Encoding UTF8
+    throw
+}
