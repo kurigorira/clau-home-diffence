@@ -357,6 +357,14 @@ def cmd_scan(args) -> int:
     new_devices = find_new_devices(current, known)
     timestamp = _dt.datetime.now().astimezone().isoformat(timespec="seconds")
 
+    # 稼働記録（ハートビート）は、未知端末の有無にかかわらず毎回残す
+    write_log(
+        args.log,
+        {"time": timestamp, "event": "scan_ok", "severity": "info",
+         "known_seen": len([m for m in current if m in known]),
+         "unknown": len(new_devices)},
+    )
+
     if new_devices:
         for dev in new_devices:
             record = {
@@ -374,12 +382,6 @@ def cmd_scan(args) -> int:
         )
         print(f"ALERT: 未知の端末 {len(new_devices)} 台 — {macs}")
         return 2
-
-    write_log(
-        args.log,
-        {"time": timestamp, "event": "scan_ok", "severity": "info",
-         "known_seen": len([m for m in current if m in known])},
-    )
     # --notify-ok 指定時は、異常が無くても「動作中」のトーストを出す（既定はオフ）
     if getattr(args, "notify_ok", False):
         desktop_notify(
