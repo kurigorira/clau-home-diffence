@@ -218,14 +218,37 @@ def discover(cidr: Optional[str] = None) -> Dict[str, str]:
     return {}
 
 
+def _lenient_json_loads(text: str):
+    """手編集された JSON を許容的に読む。まず厳密に、ダメなら末尾カンマを除去して再試行。"""
+    try:
+        return json.loads(text), False
+    except json.JSONDecodeError:
+        pass
+    fixed = re.sub(r",(\s*[}\]])", r"\1", text)
+    return json.loads(fixed), True  # ここでも失敗すれば JSONDecodeError が上がる
+
+
 def load_known(path: str) -> Dict[str, str]:
     if not os.path.exists(path):
         return {}
     try:
-        with open(path, "r", encoding="utf-8") as fh:
-            data = json.load(fh)
-    except (OSError, json.JSONDecodeError):
+        with open(path, "r", encoding="utf-8-sig") as fh:
+            text = fh.read()
+    except OSError as exc:
+        sys.stderr.write(f"既知端末リストを読めません: {path} ({exc})\n")
         return {}
+    try:
+        data, repaired = _lenient_json_loads(text)
+    except json.JSONDecodeError as exc:
+        sys.stderr.write(
+            f"既知端末リスト {path} が壊れています（{exc}）。\n"
+            "  JSON の構文（カンマや引用符）を修正してください。修正するまで全端末が未知扱いになります。\n"
+        )
+        return {}
+    if repaired:
+        sys.stderr.write(
+            f"注意: {path} に余分なカンマがありましたが、自動補正して読み込みました。ファイルの修正をおすすめします。\n"
+        )
     devices = data.get("devices", data) if isinstance(data, dict) else {}
     out: Dict[str, str] = {}
     for mac, name in devices.items():

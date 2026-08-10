@@ -136,6 +136,26 @@ class TestKnownFileRoundTrip(unittest.TestCase):
     def test_load_missing_returns_empty(self):
         self.assertEqual(ns.load_known("/no/such/file.json"), {})
 
+    def test_load_tolerates_trailing_comma(self):
+        # メモ帳での手編集で末尾カンマが残っても読めること（過去に実運用で発生）
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "known.json")
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write('{"devices": {"aa:bb:cc:11:22:33": "router",\n'
+                         '"f4:a9:97:94:41:28": "printer",\n}}')
+            loaded = ns.load_known(path)
+            self.assertEqual(loaded["f4:a9:97:94:41:28"], "printer")
+            self.assertEqual(len(loaded), 2)
+
+    def test_load_broken_json_returns_empty_with_message(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "known.json")
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write('{"devices": {"aa:bb" broken}')
+            self.assertEqual(ns.load_known(path), {})
+
 
 if __name__ == "__main__":
     unittest.main()
