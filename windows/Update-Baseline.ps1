@@ -19,12 +19,16 @@ $ErrorActionPreference = 'Stop'
 $ScriptDir = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Definition }
 if (-not $ConfigPath) { $ConfigPath = Join-Path $ScriptDir 'config\homewatch.config.psd1' }
 
-# 管理者チェック（baseline.json は管理者が作成したファイルのため、更新にも管理者権限が必要）
+# 管理者チェック（baseline.json は管理者が作成したファイルのため、更新にも管理者権限が必要）。
+# 非管理者で実行された場合は、UAC ダイアログを出して自動で昇格再実行する。
 $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
     ).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 if (-not $isAdmin) {
-    Write-Error "管理者として実行してください（スタートメニューで PowerShell を右クリック →「管理者として実行」）。"
-    exit 1
+    Write-Host "管理者権限が必要です。確認ダイアログが出たら「はい」を選んでください..."
+    $self = Join-Path $ScriptDir 'Update-Baseline.ps1'
+    Start-Process powershell.exe -Verb RunAs -ArgumentList `
+        '-NoProfile', '-ExecutionPolicy', 'Bypass', '-NoExit', '-File', "`"$self`""
+    exit 0
 }
 
 Import-Module (Join-Path $ScriptDir 'modules\HomeWatch.psm1') -Force

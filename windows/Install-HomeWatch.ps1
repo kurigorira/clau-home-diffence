@@ -25,12 +25,15 @@ $ErrorActionPreference = 'Stop'
 $ScriptDir = if ($PSScriptRoot) { $PSScriptRoot } else { Split-Path -Parent $MyInvocation.MyCommand.Definition }
 if (-not $ConfigPath) { $ConfigPath = Join-Path $ScriptDir 'config\homewatch.config.psd1' }
 
-# 管理者チェック
+# 管理者チェック（セキュリティログ読み取りとタスク登録に必要）。非管理者なら UAC で自動昇格する。
 $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
     ).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 if (-not $isAdmin) {
-    Write-Error "管理者として実行してください（セキュリティログ読み取りとタスク登録に必要）。"
-    exit 1
+    Write-Host "管理者権限が必要です。確認ダイアログが出たら「はい」を選んでください..."
+    $self = Join-Path $ScriptDir 'Install-HomeWatch.ps1'
+    Start-Process powershell.exe -Verb RunAs -ArgumentList `
+        '-NoProfile', '-ExecutionPolicy', 'Bypass', '-NoExit', '-File', "`"$self`""
+    exit 0
 }
 
 Import-Module (Join-Path $ScriptDir 'modules\HomeWatch.psm1') -Force
