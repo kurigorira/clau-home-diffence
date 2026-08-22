@@ -1,0 +1,9 @@
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# HomeWatch ランタイム生成物（ローカルにのみ保持する検知データ）
+network/known-devices.json
+network/homewatch-netscan.log
+*.log

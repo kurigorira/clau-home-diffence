@@ -1,0 +1,485 @@
+﻿<#
+.SYNOPSIS
+    HomeWatch — Windows PC の不正侵入・乗っ取り・盗聴の兆候を検知するロジック群。
+
+.DESCRIPTION
+    検知関数（Test-*）は Windows 専用 cmdlet を直接呼ばず、データを「引数」として受け取る
+    純粋関数として実装してある。これにより Pester でモックデータを渡して検証できる。
+    実際のデータ収集（Get-WinEvent 等）は Invoke-HomeWatchScan.ps1 側が行い、結果をここへ渡す。
+
+    すべてのアラートは New-HomeWatchAlert が作る共通フォーマットのオブジェクトで返す。
+    検知データはローカルにのみ保存し、外部へ送信しない。
+#>
+
+Set-StrictMode -Version Latest
+
+# 重大度の語彙
+$script:Severities = @('info', 'warning', 'alert')
+
+function Get-PropOr {
+    <# オブジェクトのプロパティを StrictMode 安全に取得する。存在しなければ Default を返す。
+       （$obj.PSObject.Properties.Name -contains ... は一部のデシリアライズ済みオブジェクトで
+        例外になるため、こちらを使う。） #>
+    [CmdletBinding()]
+    param([object]$Object, [Parameter(Mandatory)][string]$Name, $Default = $null)
+    if ($null -eq $Object) { return $Default }
+    try {
+        $v = $Object.$Name
+        if ($null -ne $v) { return $v }
+    } catch { }
+    return $Default
+}
+
+function New-HomeWatchAlert {
+    <# アラートを共通フォーマットで生成する。 #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Category,
+        [Parameter(Mandatory)][ValidateSet('info', 'warning', 'alert')][string]$Severity,
+        [Parameter(Mandatory)][string]$Message,
+        [hashtable]$Details = @{}
+    )
+    [pscustomobject]@{
+        Time     = (Get-Date).ToString('o')
+        Category = $Category
+        Severity = $Severity
+        Message  = $Message
+        Details  = $Details
+    }
+}
+
+function Test-LogonEvents {
+    <#
+    .SYNOPSIS
+        ログオン関連のセキュリティイベントから不審な兆候を検知する。
+    .PARAMETER Events
+        以下のプロパティを持つオブジェクト配列:
+          Id (int)            … 4624 成功 / 4625 失敗 / 4720 ユーザー作成 / 4728,4732 管理者グループ追加
+          TimeCreated (datetime)
+          LogonType (int)     … 3=ネットワーク, 10=RDP（任意）
+          TargetUserName (string)（任意）
+          IpAddress (string)（任意）
+    .PARAMETER Config
+        FailedLogonThreshold / FailedLogonWindowMinutes / NightHourStart / NightHourEnd /
+        AlertOnRemoteLogon を含むハッシュテーブル。
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][AllowEmptyCollection()][object[]]$Events,
+        [Parameter(Mandatory)][hashtable]$Config
+    )
+
+    $alerts = [System.Collections.Generic.List[object]]::new()
+
+    # --- ブルートフォース: 一定時間内の 4625（ログオン失敗）多発 ---
+    $failed = @($Events | Where-Object { $_.Id -eq 4625 })
+    if ($failed.Count -ge $Config.FailedLogonThreshold) {
+        $windowMin = [double]$Config.FailedLogonWindowMinutes
+        $times = @($failed | ForEach-Object { [datetime]$_.TimeCreated } | Sort-Object)
+        $span = ($times[-1] - $times[0]).TotalMinutes
+        if ($span -le $windowMin) {
+            $accounts = @($failed | ForEach-Object { $_.TargetUserName } |
+                          Where-Object { $_ } | Select-Object -Unique) -join ', '
+            $alerts.Add((New-HomeWatchAlert -Category 'logon' -Severity 'alert' `
+                -Message "短時間にログオン失敗が $($failed.Count) 回（ブルートフォースの疑い）" `
+                -Details @{ count = $failed.Count; windowMinutes = [math]::Round($span, 1); accounts = $accounts }))
+        }
+    }
+
+    # --- リモート/RDP ログオン成功（LogonType 3 または 10）---
+    if ($Config.AlertOnRemoteLogon) {
+        foreach ($e in @($Events | Where-Object { $_.Id -eq 4624 })) {
+            $lt = Get-PropOr $e 'LogonType' $null
+            if ($lt -in 3, 10) {
+                $kind = if ($lt -eq 10) { 'RDP(リモートデスクトップ)' } else { 'ネットワーク' }
+                $alerts.Add((New-HomeWatchAlert -Category 'logon' -Severity 'warning' `
+                    -Message "$kind ログオン成功（心当たりが無ければ要確認）" `
+                    -Details @{ logonType = $lt; user = $e.TargetUserName; ip = $e.IpAddress }))
+            }
+        }
+    }
+
+    # --- 深夜帯のログオン成功 ---
+    # 対象は「人が操作した」ログオンのみ: 2=対話, 7=ロック解除, 10=RDP, 11=キャッシュ対話。
+    # 4=バッチ(スケジュールタスク) や 5=サービス は定期タスクが夜間も発生させるため対象外
+    # （HomeWatch 自身の定期実行で毎晩誤検知になるのを防ぐ）。
+    $nightStart = [int]$Config.NightHourStart
+    $nightEnd = [int]$Config.NightHourEnd
+    $interactiveTypes = 2, 7, 10, 11
+    foreach ($e in @($Events | Where-Object { $_.Id -eq 4624 })) {
+        $lt = Get-PropOr $e 'LogonType' $null
+        if ($lt -notin $interactiveTypes) { continue }
+        $hour = ([datetime]$e.TimeCreated).Hour
+        $isNight = if ($nightStart -le $nightEnd) {
+            ($hour -ge $nightStart -and $hour -lt $nightEnd)
+        } else {
+            ($hour -ge $nightStart -or $hour -lt $nightEnd)  # 例: 23時〜5時 のように日付をまたぐ場合
+        }
+        if ($isNight) {
+            $alerts.Add((New-HomeWatchAlert -Category 'logon' -Severity 'warning' `
+                -Message "深夜帯（$hour 時）の対話ログオン成功" `
+                -Details @{ hour = $hour; user = $e.TargetUserName; logonType = $lt }))
+        }
+    }
+
+    # --- 新規ローカルユーザー作成 / 管理者グループへの追加 ---
+    foreach ($e in @($Events | Where-Object { $_.Id -eq 4720 })) {
+        $alerts.Add((New-HomeWatchAlert -Category 'account' -Severity 'alert' `
+            -Message "新しいユーザーアカウントが作成されました" `
+            -Details @{ user = $e.TargetUserName }))
+    }
+    foreach ($e in @($Events | Where-Object { $_.Id -in 4728, 4732 })) {
+        $alerts.Add((New-HomeWatchAlert -Category 'account' -Severity 'alert' `
+            -Message "ユーザーが特権グループ（管理者等）に追加されました" `
+            -Details @{ user = $e.TargetUserName }))
+    }
+
+    return $alerts.ToArray()
+}
+
+function Test-NetworkListeners {
+    <#
+    .SYNOPSIS
+        待ち受け（Listen）中のポートのうち、「新しく」現れた不審なものだけを検知する。
+    .DESCRIPTION
+        誤検知を抑えるため、次のいずれかに該当する待ち受けは正常としてアラートしない:
+          1) 許可リスト(AllowedPorts)にあるポート
+          2) インストール時のベースライン(BaselinePorts)に既にあった (ポート/プロセス) の組
+          3) エフェメラル（動的）ポート範囲。Windows の RPC が起動毎に使い回す高位ポートで、
+             番号が毎回変わるため除外する（IgnoreEphemeral=$true のとき）。
+        これらに当てはまらない＝「見覚えのない新しい待ち受け」だけを warning として報告する。
+    .PARAMETER Listeners
+        LocalPort (int) と OwningProcessName (string, 任意) を持つオブジェクト配列。
+    .PARAMETER AllowedPorts
+        常に許可する待ち受けポート番号の配列（config）。
+    .PARAMETER BaselinePorts
+        インストール時に記録した既知の待ち受け。"port" と "process" を持つオブジェクト配列。
+    .PARAMETER EphemeralStart
+        エフェメラルポートの開始番号（既定 49152）。
+    .PARAMETER IgnoreEphemeral
+        エフェメラル範囲を無視するか（既定 $true）。
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][AllowEmptyCollection()][object[]]$Listeners,
+        [Parameter(Mandatory)][AllowEmptyCollection()][int[]]$AllowedPorts,
+        [AllowEmptyCollection()][object[]]$BaselinePorts = @(),
+        [int]$EphemeralStart = 49152,
+        [bool]$IgnoreEphemeral = $true
+    )
+    # ベースラインの (port|process) を集合化して高速照合する
+    $baselineKeys = [System.Collections.Generic.HashSet[string]]::new(
+        [string[]]@($BaselinePorts | ForEach-Object {
+            "$([int](Get-PropOr $_ 'port' 0))|$(Get-PropOr $_ 'process' '')"
+        })
+    )
+    $alerts = [System.Collections.Generic.List[object]]::new()
+    foreach ($l in $Listeners) {
+        $port = [int]$l.LocalPort
+        $proc = Get-PropOr $l 'OwningProcessName' '?'
+        if ($AllowedPorts -contains $port) { continue }
+        if ($IgnoreEphemeral -and $port -ge $EphemeralStart) { continue }
+        if ($baselineKeys.Contains("$port|$proc")) { continue }
+        $alerts.Add((New-HomeWatchAlert -Category 'network' -Severity 'warning' `
+            -Message "見覚えのない待ち受けポートを検出: $port ($proc)" `
+            -Details @{ port = $port; process = $proc }))
+    }
+    return $alerts.ToArray()
+}
+
+function Get-NewItems {
+    <# Current から Baseline に無い項目（KeyProperty で比較）を返す共通ヘルパー。 #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][AllowEmptyCollection()][object[]]$Current,
+        [Parameter(Mandatory)][AllowEmptyCollection()][object[]]$Baseline,
+        [Parameter(Mandatory)][string]$KeyProperty
+    )
+    $baselineKeys = [System.Collections.Generic.HashSet[string]]::new(
+        [string[]]@($Baseline | ForEach-Object { [string]$_.$KeyProperty })
+    )
+    @($Current | Where-Object { -not $baselineKeys.Contains([string]$_.$KeyProperty) })
+}
+
+function Test-Persistence {
+    <#
+    .SYNOPSIS
+        自動起動エントリ（スケジュールタスク・Run キー・スタートアップ）の新規追加を検知する。
+        マルウェアの常駐（永続化）の典型的なサイン。
+    .PARAMETER Current / .PARAMETER Baseline
+        Id (一意キー: 種別+名前+対象) と Name, Type を持つオブジェクト配列。
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][AllowEmptyCollection()][object[]]$Current,
+        [Parameter(Mandatory)][AllowEmptyCollection()][object[]]$Baseline,
+        [AllowEmptyCollection()][string[]]$IgnorePatterns = @()
+    )
+    # HomeWatch 自身のタスクは常に除外（自作自演の誤検知防止）
+    $patterns = @('HomeWatch-*') + @($IgnorePatterns | Where-Object { $_ })
+    $alerts = [System.Collections.Generic.List[object]]::new()
+    foreach ($item in (Get-NewItems -Current $Current -Baseline $Baseline -KeyProperty 'Id')) {
+        $ignored = $false
+        foreach ($pat in $patterns) {
+            if ($item.Name -like $pat) { $ignored = $true; break }
+        }
+        if ($ignored) { continue }
+        $type = Get-PropOr $item 'Type' 'autostart'
+        $alerts.Add((New-HomeWatchAlert -Category 'persistence' -Severity 'alert' `
+            -Message "新しい自動起動エントリを検出（$type）: $($item.Name)" `
+            -Details @{ id = $item.Id; name = $item.Name; type = $type }))
+    }
+    return $alerts.ToArray()
+}
+
+function Test-NewLocalUsers {
+    <# ベースラインに無いローカルユーザーを検知する。 #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][AllowEmptyCollection()][object[]]$Current,
+        [Parameter(Mandatory)][AllowEmptyCollection()][object[]]$Baseline
+    )
+    $alerts = [System.Collections.Generic.List[object]]::new()
+    foreach ($u in (Get-NewItems -Current $Current -Baseline $Baseline -KeyProperty 'Name')) {
+        $alerts.Add((New-HomeWatchAlert -Category 'account' -Severity 'alert' `
+            -Message "ベースラインに無いローカルユーザー: $($u.Name)" `
+            -Details @{ user = $u.Name }))
+    }
+    return $alerts.ToArray()
+}
+
+function Test-MicCameraAccess {
+    <#
+    .SYNOPSIS
+        盗聴・盗撮対策。最近マイク/カメラにアクセスしたアプリのうち、許可リスト外のものを検知する。
+    .PARAMETER AccessRecords
+        App (string), Capability ('microphone' | 'webcam'), LastUsed (datetime) を持つ配列。
+        レジストリ ...CapabilityAccessManager\ConsentStore\{microphone,webcam} 由来を想定。
+    .PARAMETER AllowedApps
+        利用を許可するアプリ名（部分一致）の配列。
+    .PARAMETER SinceHours
+        直近何時間以内のアクセスを対象とするか（既定 24）。
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][AllowEmptyCollection()][object[]]$AccessRecords,
+        [Parameter(Mandatory)][AllowEmptyCollection()][string[]]$AllowedApps,
+        [int]$SinceHours = 24
+    )
+    $alerts = [System.Collections.Generic.List[object]]::new()
+    $cutoff = (Get-Date).AddHours(-1 * $SinceHours)
+    foreach ($r in $AccessRecords) {
+        if ([datetime]$r.LastUsed -lt $cutoff) { continue }
+        $allowed = $false
+        foreach ($a in $AllowedApps) {
+            if ($a -and $r.App -like "*$a*") { $allowed = $true; break }
+        }
+        if (-not $allowed) {
+            $cap = if ($r.Capability -eq 'webcam') { 'カメラ' } else { 'マイク' }
+            $alerts.Add((New-HomeWatchAlert -Category 'eavesdropping' -Severity 'alert' `
+                -Message "許可リスト外のアプリが$cap を使用しました: $($r.App)" `
+                -Details @{ app = $r.App; capability = $r.Capability; lastUsed = ([datetime]$r.LastUsed).ToString('o') }))
+        }
+    }
+    return $alerts.ToArray()
+}
+
+function Write-HomeWatchLog {
+    <# アラートを JSON Lines でローカルログに追記する（重複は直近ログとの照合で抑制）。 #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][object]$Alert,
+        [Parameter(Mandatory)][string]$Path,
+        [int]$DedupeWindowMinutes = 60
+    )
+    $dir = Split-Path -Parent $Path
+    if ($dir -and -not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+
+    if (Test-Path $Path) {
+        $cutoff = (Get-Date).AddMinutes(-1 * $DedupeWindowMinutes)
+        $recent = Get-Content -Path $Path -Tail 200 -ErrorAction SilentlyContinue
+        foreach ($line in $recent) {
+            try { $prev = $line | ConvertFrom-Json } catch { continue }
+            # ハートビート等 Category を持たない行も混在するため安全に取り出す
+            $prevTimeRaw = Get-PropOr $prev 'Time' $null
+            if ($null -eq $prevTimeRaw) { continue }
+            if ((Get-PropOr $prev 'Category' '') -eq $Alert.Category `
+                -and (Get-PropOr $prev 'Message' '') -eq $Alert.Message `
+                -and ([datetime]$prevTimeRaw) -ge $cutoff) {
+                return $false  # 直近に同一アラートあり → 抑制
+            }
+        }
+    }
+    ($Alert | ConvertTo-Json -Compress -Depth 6) | Add-Content -Path $Path -Encoding UTF8
+    return $true
+}
+
+function Send-HomeWatchAlert {
+    <# Windows トースト通知を出す。失敗時はイベントログ/標準出力にフォールバック。 #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][object]$Alert
+    )
+    $title = "HomeWatch: $($Alert.Category) [$($Alert.Severity)]"
+    $body = $Alert.Message
+    try {
+        [void][Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime]
+        $template = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent(
+            [Windows.UI.Notifications.ToastTemplateType]::ToastText02)
+        $texts = $template.GetElementsByTagName('text')
+        $texts.Item(0).AppendChild($template.CreateTextNode($title)) | Out-Null
+        $texts.Item(1).AppendChild($template.CreateTextNode($body)) | Out-Null
+        $toast = [Windows.UI.Notifications.ToastNotification]::new($template)
+        [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('HomeWatch').Show($toast)
+    } catch {
+        # フォールバック1: アプリケーションイベントログ
+        try {
+            if (-not [System.Diagnostics.EventLog]::SourceExists('HomeWatch')) {
+                New-EventLog -LogName Application -Source 'HomeWatch' -ErrorAction Stop
+            }
+            Write-EventLog -LogName Application -Source 'HomeWatch' -EntryType Warning `
+                -EventId 1 -Message "$title`n$body"
+        } catch {
+            # フォールバック2: 標準出力
+            Write-Output "[$title] $body"
+        }
+    }
+}
+
+function Save-Baseline {
+    <# ベースライン（許可状態のスナップショット）を JSON で保存する。 #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][hashtable]$Baseline,
+        [Parameter(Mandatory)][string]$Path
+    )
+    $dir = Split-Path -Parent $Path
+    if ($dir -and -not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+    $Baseline['_updatedAt'] = (Get-Date).ToString('o')
+    $Baseline | ConvertTo-Json -Depth 8 | Set-Content -Path $Path -Encoding UTF8
+}
+
+function Get-Baseline {
+    <# 保存済みベースラインを読み込む。無ければ $null。 #>
+    [CmdletBinding()]
+    param([Parameter(Mandatory)][string]$Path)
+    if (-not (Test-Path $Path)) { return $null }
+    return Get-Content -Path $Path -Raw | ConvertFrom-Json
+}
+
+# ===========================================================================
+# データ収集関数（実 Windows 環境でのみ意味を持つ。呼ばれたときだけ実行されるので、
+# 非 Windows でモジュールを Import-Module してもエラーにならない）。
+# 検知ロジック（Test-*）とは分離してあり、これらの戻り値を Test-* に渡す。
+# ===========================================================================
+function Get-RecentLogonEvents {
+    <# 直近 N 分のログオン関連セキュリティイベントを正規化して返す。 #>
+    [CmdletBinding()]
+    param([int]$Minutes = 20)
+    $start = (Get-Date).AddMinutes(-1 * $Minutes)
+    $ids = 4624, 4625, 4720, 4728, 4732
+    try {
+        $raw = Get-WinEvent -FilterHashtable @{ LogName = 'Security'; Id = $ids; StartTime = $start } -ErrorAction Stop
+    } catch {
+        return @()  # 該当イベント無し等は空扱い
+    }
+    foreach ($e in $raw) {
+        $x = [xml]$e.ToXml()
+        $data = @{}
+        foreach ($d in $x.Event.EventData.Data) { $data[$d.Name] = $d.'#text' }
+        [pscustomobject]@{
+            Id             = [int]$e.Id
+            TimeCreated    = $e.TimeCreated
+            LogonType      = if ($data.ContainsKey('LogonType')) { [int]$data['LogonType'] } else { $null }
+            TargetUserName = $data['TargetUserName']
+            IpAddress      = $data['IpAddress']
+        }
+    }
+}
+
+function Get-CurrentListeners {
+    <# 現在 Listen 中の TCP ポートと所有プロセス名を返す。 #>
+    [CmdletBinding()] param()
+    try {
+        Get-NetTCPConnection -State Listen -ErrorAction Stop | ForEach-Object {
+            $procName = try { (Get-Process -Id $_.OwningProcess -ErrorAction Stop).ProcessName } catch { '?' }
+            [pscustomobject]@{ LocalPort = [int]$_.LocalPort; OwningProcessName = $procName }
+        } | Sort-Object LocalPort -Unique
+    } catch { @() }
+}
+
+function Get-CurrentLocalUsers {
+    <# ローカルユーザー名の一覧を返す。 #>
+    [CmdletBinding()] param()
+    try { Get-LocalUser | ForEach-Object { [pscustomobject]@{ Name = $_.Name } } } catch { @() }
+}
+
+function Get-CurrentPersistence {
+    <# 自動起動エントリ（スケジュールタスク・Run キー・スタートアップ）を一意キー付きで返す。 #>
+    [CmdletBinding()] param()
+    $items = [System.Collections.Generic.List[object]]::new()
+    try {
+        foreach ($t in (Get-ScheduledTask -ErrorAction Stop)) {
+            $items.Add([pscustomobject]@{
+                Id = "task:$($t.TaskPath)$($t.TaskName)"; Name = $t.TaskName; Type = 'ScheduledTask' })
+        }
+    } catch {}
+    $runKeys = @(
+        'HKLM:\Software\Microsoft\Windows\CurrentVersion\Run',
+        'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
+    )
+    foreach ($key in $runKeys) {
+        if (Test-Path $key) {
+            $props = Get-ItemProperty -Path $key
+            foreach ($p in $props.PSObject.Properties) {
+                if ($p.Name -like 'PS*') { continue }
+                $items.Add([pscustomobject]@{
+                    Id = "run:$key\$($p.Name)"; Name = "$($p.Name) = $($p.Value)"; Type = 'RunKey' })
+            }
+        }
+    }
+    $startup = [Environment]::GetFolderPath('Startup')
+    if ($startup -and (Test-Path $startup)) {
+        foreach ($f in (Get-ChildItem -Path $startup -File -ErrorAction SilentlyContinue)) {
+            $items.Add([pscustomobject]@{ Id = "startup:$($f.Name)"; Name = $f.Name; Type = 'StartupFolder' })
+        }
+    }
+    return $items.ToArray()
+}
+
+function Get-MicCameraAccess {
+    <# ConsentStore から、マイク/カメラを使ったアプリと最終使用時刻を返す。 #>
+    [CmdletBinding()] param()
+    $records = [System.Collections.Generic.List[object]]::new()
+    foreach ($cap in @('microphone', 'webcam')) {
+        foreach ($hive in @('HKCU:', 'HKLM:')) {
+            $base = "$hive\Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\$cap"
+            if (-not (Test-Path $base)) { continue }
+            foreach ($appKey in (Get-ChildItem -Path $base -ErrorAction SilentlyContinue)) {
+                $leaves = @($appKey) + @(Get-ChildItem -Path $appKey.PSPath -Recurse -ErrorAction SilentlyContinue)
+                foreach ($leaf in $leaves) {
+                    $val = Get-ItemProperty -Path $leaf.PSPath -ErrorAction SilentlyContinue
+                    $stopRaw = Get-PropOr $val 'LastUsedTimeStop' $null
+                    if ($null -ne $stopRaw) {
+                        $stop = [int64]$stopRaw
+                        if ($stop -gt 0) {
+                            $records.Add([pscustomobject]@{
+                                App        = ($leaf.PSChildName -replace '#', '\')
+                                Capability = $cap
+                                LastUsed   = [DateTime]::FromFileTime($stop)
+                            })
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return $records.ToArray()
+}
+
+Export-ModuleMember -Function `
+    Get-PropOr, New-HomeWatchAlert, Test-LogonEvents, Test-NetworkListeners, Get-NewItems, `
+    Test-Persistence, Test-NewLocalUsers, Test-MicCameraAccess, `
+    Write-HomeWatchLog, Send-HomeWatchAlert, Save-Baseline, Get-Baseline, `
+    Get-RecentLogonEvents, Get-CurrentListeners, Get-CurrentLocalUsers, `
+    Get-CurrentPersistence, Get-MicCameraAccess
